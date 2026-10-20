@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **60** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **87** 个用例全绿）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -49,19 +49,23 @@
 
 ## 阶段 1：右键菜单（核心交互）
 
-### [ ] TODO-3 图谱右键菜单框架（P0）
+### [x] TODO-3 图谱右键菜单框架（P0）
 
 - **目标**：在 commit 行上右键弹出动作菜单，作为主要操作入口（对齐上游 A1）。
 - **文件**：`lib/client.js` 新增 `ContextMenu` 组件 + `CommitRow.onContextMenu`。
 - **做法**：`position: fixed` 菜单，`role="menu"`/`role="menuitem"`，Esc 与点击外部关闭，键盘上下键可移动、Enter 触发；不改 `document.body`，菜单作为 body 组件内的兄弟节点渲染；打开时记录 `{ x, y, commit }`，并在窗口 resize/滚动时关闭。
-- **验收**：
+- **完成**（2026-10-20）：`commitMenuItems` / `menuStep` / `placeMenu` / `menuStillValid` 纯函数 +
+  `CommitMenu` 组件；右键、Shift+F10、ContextMenu 键均可打开；方向键/Home/End 循环并跳过禁用项、
+  Enter 执行、Escape 关闭、Tab 被拦截；指针外部、滚动、resize、刷新后提交消失都会关闭。
+  菜单项复用 `openDialog`/`startAction`，未复制任何请求构造逻辑。合并提交的"还原"禁用并给出原因。
+- **原验收**：
   - 右键任意提交行在指针位置弹出菜单，Esc / 点外部 / 选中动作后关闭；
   - 键盘可操作（Tab 不逃逸、方向键移动、Enter 执行）；
   - 菜单项由提交能力决定（见 TODO-4/5），禁用项显示原因；
   - 补 2 个 client 用例（打开/关闭、键盘选择）。
 - **依赖**：无。
 
-### [ ] TODO-4 提交级菜单项（P0）
+### [x] TODO-4 提交级菜单项（P0）
 
 - **目标**：右键 commit → 检出、建分支、拣选、还原、建标签（复用已有动作）。
 - **文件**：`lib/client.js`（菜单项表），无 host 改动。
@@ -76,17 +80,20 @@
 
 ## 阶段 2：图上的"另一类对象"
 
-### [ ] TODO-6 未提交改动节点（P1）
+### [x] TODO-6 未提交改动节点（P1）
 
 - **目标**：图顶部显示 uncommitted changes 虚拟节点，可点击查看当前改动（对齐 A3）。
 - **文件**：`lib/git.js`（新增读未提交文件列表的能力，复用 `status --porcelain=v1 -z` 已有解析）、`lib/index.js`（`commit` 路由支持 `hash: "UNCOMMITTED"` 或新增 `uncommitted` 路由）、`lib/client.js`（图首行注入虚拟节点、`layoutGraph` 忽略它）。
-- **验收**：
+- **完成**（2026-10-20）：host `readUncommitted()` + `POST /uncommitted`；client `buildListModel`
+  把合成行完全排除在 `layoutGraph` 之外（有测试断言布局逐字节不变），`UncommittedView` 按
+  staged / unstaged / untracked 分组，文件 diff 走 `scope: "staged" | "unstaged"`。
+- **原验收**：
   - 有改动时图首行出现单节点（虚线/特殊样式 + "未提交改动"），无改动时不出现；
   - 点击后详情区列出改动文件（A/M/D/R），每个文件可展开 diff（`git diff` / `git diff --cached` 分别对应工作区与暂存）；
   - 虚拟节点不参与 lane 计算，不影响既有快照测试；补 host + client 用例各 1。
 - **风险**：`layoutGraph` 目前假设"每个 commit 都有 hash 且可能被父引用"，需显式排除虚拟节点。
 
-### [ ] TODO-7 双提交对比视图（P1）
+### [x] TODO-7 双提交对比视图（P1）
 
 - **目标**：选一个提交后 Ctrl/Cmd 点另一个，进入对比视图（对齐 A2）。
 - **文件**：`lib/git.js`（`compareCommits(cwd, from, to)`：`diff --name-status` / `--numstat` / `diff`）、`lib/index.js`（`/api/dsh-git-graph/compare`）、`lib/client.js`（对比态 UI、`Ctrl/Cmd+Click` 选择、退出对比）。
@@ -94,6 +101,9 @@
   - 选中 A 后 Ctrl/Cmd 点 B，进入 `A...B` 对比态，标题显示两个短哈希与 `←/→`；
   - 文件列表 + 逐文件 diff 与单提交详情结构一致；支持交换方向；
   - Esc 退出对比返回列表；`core.quotepath=false` 下非 ASCII 路径正常；
+  - **完成**（2026-10-20）：host `compareCommits()` + `POST /compare`（`git diff` 树对树、名字状态 +
+    numstat、rename/binary、stats 等于逐文件求和）；client `CompareView`（双方 abbrev、⇄ 交换、
+    compare 作用域 diff、Escape 顺序 对比 → 详情 → 列表）。Ctrl/Cmd+点击与菜单"与…对比"两条入口。
   - 补 host 用例 2 个（重命名、二进制）+ client 用例 1 个。
 
 ### [ ] TODO-8 提交顶点悬浮提示（P2）
