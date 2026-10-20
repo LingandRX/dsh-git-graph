@@ -10,7 +10,7 @@
 | 上游命令 | `package.json` → `contributes.commands`（**10** 个） |
 | 上游 Git 能力 | `src/dataSource.ts` 的 `public` 方法（**51** 个） |
 | 上游快捷键 | `README.md` 的 Keyboard Shortcuts 段 |
-| 我们的能力 | `lib/git.js` 导出的 6 个方法 + `performAction` 的 10 个 case；`lib/index.js` 的 `ACTION_FIELDS`（9 个键）；`lib/client.js` 的 `actions` 数组（8 个）；`cordis.patch.yml` 的 3 个配置键 |
+| 我们的能力 | `lib/git.js` 导出的 6 个方法 + `performAction` 的 10 个 case；`lib/index.js` 的 `ACTION_FIELDS`（9 个键）；`lib/client.js` 的 `actions` 数组（9 个）；`cordis.patch.yml` 的 3 个配置键 |
 
 ## 总览
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | 设置项 | 110 | 3 | 3% |
 | 命令 | 10 | 1 个入口（右侧栏 guide 卡片） | 场景等价 |
-| Git 操作 | 51 | 10（UI 接 8） | ~16% |
+| Git 操作 | 51 | 10（UI 接 9） | ~18% |
 | 图视图交互 | 右键菜单 / 查找 / 过滤 / 对比 / 悬浮 / 列设置 | 点击进入详情 | 部分 |
 | 快捷键 | 6 组 | 仅 Escape | 少 |
 
@@ -42,11 +42,11 @@
 | 状态页 | `LoadingState` / `ErrorState` / `NotRepoState` / `EmptyState` | 含非 Git 仓库的路径提示 |
 | `git_graph` 智能体工具 | `lib/index.js` | 只读 log/show/diff/branches/status，与 UI 共用同一 Git 层 |
 
-已迁移的 Git 动作（**8 个**，UI 可触发）：
-检出分支、检出提交（分离 HEAD）、建分支、拣选、还原、建标签、删标签、fetch。
+已迁移的 Git 动作（**9 个**，UI 可触发）：
+检出分支、检出提交（分离 HEAD）、建分支、**删除分支**、拣选、还原、建标签、删标签、fetch。
 
-> `deleteBranch`：host 侧 `ACTION_FIELDS` 与 `performAction` 的 `case "deleteBranch"` 都已实现，
-> 但客户端 `actions` 数组未纳入、也没有对应 locale 键 —— **属"差一行接线"，见 TODO-1**。
+> `deleteBranch`：已完成接线（TODO-1）——host 侧本就有实现，客户端现已纳入动作行，
+> 并对未合并分支提供"强制删除"二次确认。
 
 ---
 

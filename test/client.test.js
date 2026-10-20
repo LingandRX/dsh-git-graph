@@ -45,6 +45,11 @@ const CONTRACT_KEYS = [
   "action.revert",
   "action.createTag",
   "action.deleteTag",
+  "action.deleteBranch",
+  "action.forceDeleteBranch",
+  "action.notMerged",
+  "action.output",
+  "action.hideOutput",
   "action.fetch",
   "action.confirm",
   "action.cancel",
@@ -146,7 +151,7 @@ function instrument(exports) {
  */
 function loadInternals() {
   const { exported } = loadModule(
-    instrument("__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips }"),
+    instrument("__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal }"),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
   return exported.__test;
@@ -600,4 +605,61 @@ test("lanePath draws straight continuations and curved merges", () => {
   const { lanePath } = loadInternals();
   assert.equal(lanePath(9, 0, 9, 38), "M9 0 L9 38");
   assert.match(lanePath(9, 0, 23, 38), /^M9 0 C9 19, 23 19, 23 38$/);
+});
+
+
+// ── TODO-1 / TODO-2: delete-branch wiring and action feedback ─────────────────
+
+test("actionDialogSpec offers delete-branch choices without the checked-out branch", () => {
+  const { actionDialogSpec } = loadInternals();
+  const choices = {
+    branches: [{ name: "main" }, { name: "feature" }, { name: "topic" }],
+    tags: [{ name: "v1.0" }],
+    currentBranch: "main",
+  };
+  const spec = actionDialogSpec("deleteBranch", choices);
+  assert.equal(spec.needs, "branch");
+  assert.equal(spec.destructive, true);
+  // Deleting the branch you are standing on would be refused by git.
+  assert.deepEqual(Array.from(spec.options, (option) => option.name), ["feature", "topic"]);
+  // A delete does not touch the worktree, so no dirty-worktree warning.
+  assert.equal(spec.dirtySensitive, false);
+
+  const tagSpec = actionDialogSpec("deleteTag", choices);
+  assert.equal(tagSpec.needs, "tag");
+  assert.deepEqual(Array.from(tagSpec.options, (option) => option.name), ["v1.0"]);
+
+  const checkout = actionDialogSpec("checkoutBranch", choices);
+  assert.deepEqual(Array.from(checkout.options, (option) => option.name), ["main", "feature", "topic"]);
+  assert.equal(checkout.dirtySensitive, true);
+
+  // Unknown kinds degrade to a hash-only, non-destructive dialog.
+  const other = actionDialogSpec("cherryPick", choices);
+  assert.equal(other.needs, null);
+  assert.equal(other.options.length, 0);
+  assert.equal(other.destructive, true);
+});
+
+test("actionArguments builds the exact request a confirmed dialog submits", () => {
+  const { actionArguments } = loadInternals();
+  // The client module is evaluated in a separate realm, so compare shape as JSON.
+  const shape = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(shape(actionArguments("deleteBranch", { ref: "feature" })), { name: "feature", force: false });
+  assert.deepEqual(shape(actionArguments("checkoutBranch", { ref: "main" })), { branch: "main" });
+  assert.deepEqual(shape(actionArguments("deleteTag", { ref: "v1.0" })), { name: "v1.0" });
+  assert.deepEqual(shape(actionArguments("createBranch", { name: "topic", hash: "abc123" })), { name: "topic", startPoint: "abc123" });
+  assert.deepEqual(shape(actionArguments("createTag", { name: "v2", hash: "abc123" })), { name: "v2", hash: "abc123" });
+  assert.deepEqual(shape(actionArguments("revert", { hash: "abc123" })), { hash: "abc123" });
+  // A first delete attempt never forces; escalation is a separate click.
+  assert.equal(actionArguments("deleteBranch", { ref: "x" }).force, false);
+});
+
+test("isUnmergedRefusal only escalates a not-merged branch deletion", () => {
+  const { isUnmergedRefusal } = loadInternals();
+  assert.equal(isUnmergedRefusal("deleteBranch", 'error: the branch "x" is not fully merged.'), true);
+  assert.equal(isUnmergedRefusal("deleteBranch", "该分支尚未合并"), true);
+  assert.equal(isUnmergedRefusal("deleteBranch", "error: branch not found"), false);
+  // Other actions never offer force delete.
+  assert.equal(isUnmergedRefusal("checkoutBranch", "not fully merged"), false);
+  assert.equal(isUnmergedRefusal("deleteBranch", undefined), false);
 });

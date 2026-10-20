@@ -1017,3 +1017,39 @@ test("performAction rejects unknown actions, missing args and unsafe refs", asyn
   await assert.rejects(api.performAction(fixture.empty, "fetch", {}), (error) => error.code === "NOT_A_REPO");
   await assert.rejects(api.performAction(fixture.repo, "", {}), (error) => error.code === "BAD_REQUEST");
 });
+
+// ── TODO-2: a failed action carries git's own output for the UI disclosure ────
+
+test("action route forwards git stderr as `output` on a failed action", async () => {
+  // Isolate this case: later assertions read the branch list, so start from a
+  // branch that only exists here.
+  // Deleting an unmerged branch is refused by git: the envelope must keep the
+  // summary in `message` AND the raw stderr in `output`, which the client shows
+  // behind its "show output" disclosure.
+  runGit(["branch", "unmerged-topic", fixture.commits.root], fixture.repo);
+  writeFile(path.join(fixture.repo, "topic-only.txt"), "topic\n");
+  runGit(["checkout", "-q", "unmerged-topic"], fixture.repo);
+  runGit(["add", "-A"], fixture.repo);
+  runGit(["commit", "-q", "-m", "topic commit"], fixture.repo);
+  runGit(["switch", "-q", "main"], fixture.repo);
+
+  const refused = await post(host, ACTION_PATH, { action: "deleteBranch", name: "unmerged-topic" });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.code, "GIT_FAILED");
+  assert.match(refused.error.message, /not fully merged/);
+  assert.equal(typeof refused.error.output, "string");
+  assert.match(refused.error.output, /not fully merged/);
+
+  // A successful action keeps `output` as a (possibly empty) string, not an error.
+  const succeeded = await post(host, ACTION_PATH, { action: "deleteBranch", name: "unmerged-topic", force: true });
+  assert.equal(succeeded.ok, true);
+  assert.equal(typeof succeeded.value.output, "string");
+  assert.equal(runGit(["branch", "--list", "unmerged-topic"], fixture.repo).trim(), "");
+});
+
+test("BAD_REQUEST failures carry no git output", async () => {
+  const bad = await post(host, ACTION_PATH, { action: "deleteBranch" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error.code, "BAD_REQUEST");
+  assert.equal(bad.error.output, undefined);
+});

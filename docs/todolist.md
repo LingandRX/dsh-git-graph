@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **55** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **60** 个用例全绿）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -17,7 +17,7 @@
 
 ## 阶段 0：补齐已有能力（最小改动，先做）
 
-### [ ] TODO-1 `deleteBranch` 接入 UI（P0）
+### [x] TODO-1 `deleteBranch` 接入 UI（P0）
 
 - **目标**：删除本地分支——host 已实现，只差接线。
 - **文件**：`lib/client.js`（`actions` 数组、`openDialog` 的目标选择、locale `action.deleteBranch`/`action.branchName` 复用）。
@@ -27,12 +27,23 @@
   - 确认后发出 `{ action: "deleteBranch", name, force: false }`，成功后图谱刷新、分支从下拉与 chips 消失；
   - 对未合并分支先报错、不静默强删；`node --test` 通过并补 1 个 client 用例。
 - **备注**：`ACTION_FIELDS.deleteBranch = ["name", "force"]` 已就绪，无需改 host。
+- **完成**（2026-10-20）：
+  - 详情页动作行新增"删除分支"；下拉排除当前 HEAD 分支（`actionDialogSpec`）。
+  - 先以 `force: false` 尝试；git 拒绝未合并分支时反馈条给出**"强制删除"**按钮（`isUnmergedRefusal` + `forceRef`），
+    不静默强删，也不把用户逼进死路。
+  - 抽出 3 个纯函数（`actionDialogSpec` / `actionArguments` / `isUnmergedRefusal`）便于测试，
+    对应 3 个新用例；真实仓库验证：合并分支删除成功 → 未合并被拒 → 强制删除成功。
 
-### [ ] TODO-2 动作结果可见性统一（P0）
+### [x] TODO-2 动作结果可见性统一（P0）
 
 - **目标**：所有动作的 `output`（git stdout/stderr）在失败时完整可见，成功时折叠。
 - **文件**：`lib/client.js`（`runAction`、反馈条 `dgg-feedback`）。
 - **验收**：`GIT_FAILED` 时展示 git stderr 原文（可滚动、不截断到一行）；成功仅显示 `message` + 可展开 `output`。
+- **完成**（2026-10-20）：
+  - host `errorPayload()` 现在把 git 的 `stderr`/`stdout` 作为 `error.output` 一并返回（`BAD_REQUEST` 不含）。
+  - client `postJson()` 把 `output` 挂到 rejection 上；反馈条右侧出现"查看输出/收起输出"折叠，
+    展开后是等宽可滚动的 `pre.dgg-output`（上限 180px）。
+  - host 新增 2 个用例（失败带 output、`BAD_REQUEST` 不带）；`node --test` 60 全绿。
 
 ---
 
