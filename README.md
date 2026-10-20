@@ -53,6 +53,18 @@ The row's `config` is read defensively; edit it in `cordis.patch.yml`:
 | `cordis.patch.yml` | Bundle patch (inserts the `dsh-git-graph` row) |
 | `locale/*.json` | Plugin Manager title/description (en, zh) |
 | `icon.svg` | Plugin artwork |
+| `docs/parity.md` | Migration report vs vscode-git-graph v1.30.0: what landed, what did not, and the evidence used |
+| `docs/todolist.md` | Actionable backlog (20 items) with file scope and acceptance criteria per item |
+
+## Migration status
+
+This plugin ports the core of vscode-git-graph, not all of it. The graph, commit
+details and per-file diffs are complete; the full right-click Git action surface,
+commit comparison, uncommitted-change node, find/filter and the engineering
+surroundings (multi-repo, code review, theming/settings) are not yet ported.
+
+See [docs/parity.md](docs/parity.md) for the checked gap list and
+[docs/todolist.md](docs/todolist.md) for the ordered backlog.
 
 ## Notes
 
