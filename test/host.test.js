@@ -29,6 +29,7 @@ const COMPARE_PATH = "/api/dsh-git-graph/compare";
 const STASHES_PATH = "/api/dsh-git-graph/stashes";
 const TAG_PATH = "/api/dsh-git-graph/tag";
 const REMOTES_PATH = "/api/dsh-git-graph/remotes";
+const CONTAINS_PATH = "/api/dsh-git-graph/contains";
 
 /** Filesystem and git fixtures shared by the suite. */
 const fixture = {
@@ -693,8 +694,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 9);
-  assert.equal(second.routes.size, 9);
+  assert.equal(first.routes.size, 10);
+  assert.equal(second.routes.size, 10);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -713,9 +714,12 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the nine POST Fetch routes", () => {
+test("apply registers exactly the ten POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
-  assert.deepEqual(routes, [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort());
+  assert.deepEqual(
+    routes,
+    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
+  );
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
     assert.equal(route.requestBody, "buffered");
@@ -730,7 +734,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 9);
+  assert.equal(noTools.routes.size, 10);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -2275,4 +2279,306 @@ test("git_graph keeps five actions and rejects wave-4 verbs", async () => {
   await assert.rejects(tool.execute({ action: "pushBranch" }, exec), /unknown git_graph action/);
   const branches = await tool.execute({ action: "branches" }, exec);
   assert.equal(branches.action, "branches");
+});
+
+// ---------------------------------------------------------------------------
+// Wave 5: fetchIntoLocalBranch, /contains, signature status, presentation config
+// ---------------------------------------------------------------------------
+
+test("fetchIntoLocalBranch updates a local branch without switching to it", async () => {
+  const source = createScratchRepo("fetchlocal-source");
+  writeFile(path.join(source, "a.txt"), "a\n");
+  const sourceA = commitAll(source, "A");
+  const bare = createBareRemote("fetchlocal-remote.git");
+  runGit(["remote", "add", "origin", bare], source);
+  runGit(["push", "-q", "-u", "origin", "main"], source);
+  const work = cloneFromRemote(bare, "fetchlocal-work");
+  const workHead = headOf(work);
+
+  writeFile(path.join(source, "b.txt"), "b\n");
+  const remoteB = commitAll(source, "B");
+  runGit(["push", "-q"], source);
+
+  const fetched = await api.performAction(work, "fetchIntoLocalBranch", { remote: "origin", branch: "main", local: "synced" });
+  assert.equal(fetched.message, 'Fetched "origin/main" into "synced".');
+  assert.equal(runGit(["rev-parse", "synced"], work).trim(), remoteB);
+  assert.equal(headOf(work), workHead, "HEAD did not move");
+  assert.equal(runGit(["rev-parse", "--abbrev-ref", "HEAD"], work).trim(), "main");
+
+  // A non-fast-forward update of a local branch is refused by git (no --force, no "+").
+  runGit(["branch", "behind", remoteB], work);
+  runGit(["reset", "-q", "--hard", sourceA], source);
+  runGit(["push", "-q", "--force", "origin", "main"], source);
+  await assert.rejects(
+    api.performAction(work, "fetchIntoLocalBranch", { remote: "origin", branch: "main", local: "behind" }),
+    (error) => error.code === "GIT_FAILED" && /non-fast-forward|rejected/i.test(error.message),
+  );
+  assert.equal(runGit(["rev-parse", "behind"], work).trim(), remoteB, "the refused update left the branch untouched");
+
+  await assert.rejects(api.performAction(work, "fetchIntoLocalBranch", {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "fetchIntoLocalBranch", { remote: "-x", branch: "main", local: "x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "fetchIntoLocalBranch", { remote: "origin", branch: "a..b", local: "x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "fetchIntoLocalBranch", { remote: "origin", branch: "main", local: "x.lock" }), (error) => error.code === "BAD_REQUEST");
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: work });
+  try {
+    const viaRoute = await post(routeHost, ACTION_PATH, { action: "fetchIntoLocalBranch", remote: "origin", branch: "main", local: "route-synced" });
+    assert.equal(viaRoute.ok, true);
+    assert.equal(viaRoute.value.message, 'Fetched "origin/main" into "route-synced".');
+    assert.equal(runGit(["rev-parse", "route-synced"], work).trim(), sourceA);
+
+    const refused = await post(routeHost, ACTION_PATH, { action: "fetchIntoLocalBranch", remote: "origin", branch: "main", local: "behind" });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error.code, "GIT_FAILED");
+    assert.equal(typeof refused.error.output, "string");
+    assert.match(refused.error.output, /non-fast-forward|rejected/i);
+  } finally {
+    routeHost.dispose();
+  }
+});
+
+test("readContains reports HEAD, branches, remotes, tags and stashes", async () => {
+  const dir = createScratchRepo("contains");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const a = commitAll(dir, "A");
+  runGit(["tag", "vA"], dir);
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "f.txt"), "f\n");
+  const f = commitAll(dir, "F");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "b.txt"), "b\n");
+  const b = commitAll(dir, "B");
+  const bare = createBareRemote("contains-remote.git");
+  runGit(["remote", "add", "origin", bare], dir);
+  runGit(["push", "-q", "-u", "origin", "main"], dir);
+
+  const inHead = await api.readContains(dir, b);
+  assert.equal(inHead.hash, b);
+  assert.equal(inHead.shortHash, b.slice(0, 7));
+  assert.equal(inHead.inHead, true);
+  assert.deepEqual(inHead.branches, [
+    { name: "main", isHead: true },
+    { name: "origin/main", isHead: false },
+  ]);
+  assert.deepEqual(inHead.tags, []);
+  assert.deepEqual(inHead.stashes, []);
+  assert.equal(Number.isSafeInteger(inHead.generatedAt), true);
+
+  const parent = await api.readContains(dir, a);
+  assert.equal(parent.inHead, true);
+  assert.deepEqual(
+    parent.branches.map((branch) => branch.name).sort(),
+    ["feature", "main", "origin/main"],
+  );
+  assert.deepEqual(parent.branches.find((branch) => branch.name === "feature"), { name: "feature", isHead: false });
+  assert.deepEqual(parent.tags, ["vA"]);
+
+  const onlyOnBranch = await api.readContains(dir, f);
+  assert.equal(onlyOnBranch.inHead, false);
+  assert.deepEqual(onlyOnBranch.branches, [{ name: "feature", isHead: false }]);
+  assert.deepEqual(onlyOnBranch.tags, []);
+
+  // Resolves a ref name, not just full hashes.
+  const byName = await api.readContains(dir, "feature");
+  assert.equal(byName.hash, f);
+  assert.equal(byName.inHead, false);
+
+  // A stash containing the commit is reported via refs/stash (resolved to its selector).
+  writeFile(path.join(dir, "a.txt"), "stashed change\n");
+  await api.performAction(dir, "stashPush", { message: "contains stash" });
+  const stashContained = await api.readContains(dir, a);
+  assert.deepEqual(stashContained.stashes, [{ index: 0, shortName: "stash@{0}" }]);
+  assert.equal(stashContained.inHead, true);
+
+  await assert.rejects(api.readContains(dir, {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readContains(dir, "-x"), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readContains(dir, "deadbeef".repeat(5)), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.readContains(fixture.empty, a), (error) => error.code === "NOT_A_REPO");
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const viaRoute = await post(routeHost, CONTAINS_PATH, { hash: a });
+    assert.equal(viaRoute.ok, true);
+    assert.deepEqual(Object.keys(viaRoute.value).sort(), ["branches", "generatedAt", "hash", "inHead", "shortHash", "stashes", "tags"]);
+    assert.deepEqual(viaRoute.value.tags, ["vA"]);
+    const asArray = await post(routeHost, CONTAINS_PATH, { hash: [a] });
+    assert.equal(asArray.ok, false);
+    assert.equal(asArray.error.code, "BAD_REQUEST");
+    const missing = await post(routeHost, CONTAINS_PATH, {});
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "BAD_REQUEST");
+  } finally {
+    routeHost.dispose();
+  }
+});
+
+test("readCommit reports signature status without an extra git process", async () => {
+  const dir = createScratchRepo("signature");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const head = commitAll(dir, "unsigned commit");
+
+  const detail = await api.readCommit(dir, head);
+  /* No gpg in this environment: only the unsigned shape can be asserted. A signed
+   * commit (status G/B/U/X/Y/R) is documented but untested here. */
+  assert.deepEqual(detail.signature, { status: "N", signer: null, keyId: null });
+  assert.deepEqual(Object.keys(detail.signature).sort(), ["keyId", "signer", "status"]);
+
+  // The graph page does no signature work and its commits carry no signature key.
+  const graph = await api.readGraph(dir, { maxCommits: 5 });
+  assert.equal("signature" in graph.commits[0], false);
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const viaRoute = await post(routeHost, COMMIT_PATH, { hash: head });
+    assert.equal(viaRoute.ok, true);
+    assert.deepEqual(viaRoute.value.signature, { status: "N", signer: null, keyId: null });
+    const notRepo = createHost({ config: undefined, defaultDirectory: fixture.empty });
+    try {
+      const failed = await post(notRepo, COMMIT_PATH, { hash: head });
+      assert.equal(failed.ok, false);
+      assert.equal(failed.error.code, "NOT_A_REPO");
+    } finally {
+      notRepo.dispose();
+    }
+  } finally {
+    routeHost.dispose();
+  }
+});
+
+test("graph presentation defaults, overrides and invalid fallbacks", async () => {
+  const dir = createScratchRepo("presentation");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  const defaults = {
+    graphStyle: "rounded",
+    graphColours: [],
+    showSignature: false,
+    showEmoji: true,
+    issueUrlTemplate: "",
+    useMailmap: false,
+  };
+
+  const defaultHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const graph = await post(defaultHost, GRAPH_PATH, {});
+    assert.equal(graph.ok, true);
+    assert.deepEqual(graph.value.presentation, defaults);
+    assert.equal(Object.keys(graph.value.presentation).length, 6);
+  } finally {
+    defaultHost.dispose();
+  }
+
+  const customHost = createHost({
+    config: {
+      graphStyle: "angular",
+      graphColours: ["#ff0000", "red", "var(--brand)", "rgb(1, 2, 3)", "bad;color", "", 42, "url(x)"],
+      showSignature: true,
+      showEmoji: false,
+      issueUrlTemplate: "https://example.com/issues/{id}",
+      useMailmap: true,
+    },
+    defaultDirectory: dir,
+  });
+  try {
+    const graph = await post(customHost, GRAPH_PATH, {});
+    assert.deepEqual(graph.value.presentation, {
+      graphStyle: "angular",
+      graphColours: ["#ff0000", "red", "var(--brand)", "rgb(1, 2, 3)"],
+      showSignature: true,
+      showEmoji: false,
+      issueUrlTemplate: "https://example.com/issues/{id}",
+      useMailmap: true,
+    });
+  } finally {
+    customHost.dispose();
+  }
+
+  const invalidHost = createHost({
+    config: { graphStyle: "triangular", graphColours: "#fff", showSignature: "yes", showEmoji: 0, issueUrlTemplate: 42, useMailmap: "1" },
+    defaultDirectory: dir,
+  });
+  try {
+    const graph = await post(invalidHost, GRAPH_PATH, {});
+    assert.deepEqual(graph.value.presentation, {
+      graphStyle: "rounded",
+      graphColours: [],
+      showSignature: true,
+      showEmoji: false,
+      issueUrlTemplate: "",
+      useMailmap: true,
+    });
+  } finally {
+    invalidHost.dispose();
+  }
+
+  const outside = createHost({ config: undefined, defaultDirectory: fixture.empty });
+  try {
+    const graph = await post(outside, GRAPH_PATH, {});
+    assert.deepEqual(graph.value.presentation, defaults, "every graph response carries presentation");
+  } finally {
+    outside.dispose();
+  }
+});
+
+test("useMailmap changes the commit walk argv and the reported author", async () => {
+  const calls = [];
+  const fakeRun = async (argv) => {
+    calls.push([...argv]);
+    const ok = (stdout) => ({ stdout, stderr: "", code: 0 });
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel") return ok("/fake/repo\n");
+    if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref") return ok("main\n");
+    if (argv[0] === "rev-parse") return ok(`${"a".repeat(40)}\n`);
+    if (argv[0] === "status") return ok("");
+    if (argv[0] === "for-each-ref") return ok("");
+    return ok("");
+  };
+  const fakeApi = createGitApi(fakeRun);
+
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2 });
+  let logCall = calls.filter((argv) => argv[0] === "log").pop();
+  assert.equal(logCall.includes("--use-mailmap"), false);
+  assert.ok(logCall.some((argv) => argv.startsWith("--format=") && argv.includes("%an")));
+
+  calls.length = 0;
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, useMailmap: true });
+  logCall = calls.filter((argv) => argv[0] === "log").pop();
+  assert.equal(logCall[1], "--use-mailmap");
+  const format = logCall.find((argv) => argv.startsWith("--format="));
+  assert.ok(format.includes("%aN") && format.includes("%aE") && format.includes("%cN") && format.includes("%cE"));
+  assert.equal(format.includes("%an"), false);
+
+  // Real repository: mailmap-aware placeholders make the config observable.
+  const dir = createScratchRepo("mailmap");
+  writeFile(path.join(dir, ".mailmap"), "Canonical Name <canonical@example.com> Graph Test <graph@example.com>\n");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const head = commitAll(dir, "A");
+
+  const plain = await api.readGraph(dir, { maxCommits: 5 });
+  assert.equal(plain.commits[0].authorName, "Graph Test");
+  const mapped = await api.readGraph(dir, { maxCommits: 5, useMailmap: true });
+  assert.equal(mapped.commits[0].authorName, "Canonical Name");
+  assert.equal(mapped.commits[0].authorEmail, "canonical@example.com");
+  assert.equal(mapped.commits[0].hash, head);
+
+  const mailmapHost = createHost({ config: { useMailmap: true }, defaultDirectory: dir });
+  try {
+    const graph = await post(mailmapHost, GRAPH_PATH, {});
+    assert.equal(graph.ok, true);
+    assert.equal(graph.value.presentation.useMailmap, true);
+    assert.equal(graph.value.commits[0].authorName, "Canonical Name");
+  } finally {
+    mailmapHost.dispose();
+  }
+});
+
+test("git_graph stays five read-only actions with no presentation payload", async () => {
+  const tool = host.tools[0];
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  const log = await tool.execute({ action: "log", limit: 3 }, exec);
+  assert.equal(log.action, "log");
+  assert.equal("presentation" in log, false);
+  assert.equal("signature" in (log.commits[0] ?? {}), false);
+  await assert.rejects(tool.execute({ action: "contains" }, exec), /unknown git_graph action/);
 });

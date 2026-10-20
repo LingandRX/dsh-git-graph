@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **142** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **164** 个用例全绿）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -110,12 +110,15 @@
     compare 作用域 diff、Escape 顺序 对比 → 详情 → 列表）。Ctrl/Cmd+点击与菜单"与…对比"两条入口。
   - 补 host 用例 2 个（重命名、二进制）+ client 用例 1 个。
 
-### [ ] TODO-8 提交顶点悬浮提示（P2）
+### [x] TODO-8 提交顶点悬浮提示（P2）
 
 - **目标**：悬停提交节点显示"是否在 HEAD 内 / 被哪些分支、标签、stash 包含"（对齐 A7）。
 - **文件**：`lib/git.js`（`branch --contains` 一次性批量，或 `for-each-ref --contains <hash>`）、`lib/client.js`（受控 tooltip，延时出现）。
 - **验收**：悬停 400ms 出现；内容来自 host 而非 client 猜测；键盘聚焦同样可见；不阻塞列表滚动。
 - **注意**：批量查询需限流（一次悬停只查一个哈希，带缓存 LRU ≤ 64）。
+- **完成**（2026-10-21）：host `POST /contains`（一次 `for-each-ref --contains` + `merge-base --is-ancestor`，
+  stash 命中时才解析 reflog）；client `CommitTooltip` 400ms 延迟、仅用 host 数据、LRU 64、每 hash 单飞、
+  卸载即 abort；指针/键盘聚焦都可触发，Escape/滚动/resize/打开菜单时隐藏，`pointer-events:none` 且不做 portal。
 
 ---
 
@@ -227,7 +230,7 @@
 - **文件**：`lib/index.js`（用 DSH `storageDomain` 持久化，键 `session → { commit, files: [{path, reviewedAt}] }`）、`lib/client.js`（文件行勾选、未评审加粗、进度 `3/8`）。
 - **验收**：勾选状态重开标签页仍在；`git_graph` 工具保持只读（不得写入评审状态）；过期清理有单测。
 
-### [ ] TODO-20 视觉与设置面（P2）
+### [x] TODO-20 视觉与设置面（P2）
 
 - [ ] `graphStyle`：`rounded` / `angular`（`lanePath` 增加直角分支）
 - [ ] `graphColours`：自定义 lane 调色板（`cordis.patch.yml` 数组）
@@ -236,16 +239,24 @@
 - [ ] mailmap / issue 链接（issue URL 模板 → 提交正文中的编号变链接）
 - [ ] 快捷键：`Ctrl+H` 回 HEAD、`Ctrl+R` 刷新（需确认 DSH 侧栏快捷键注册方式）
 - **验收**：每项独立可开关；`angular` 与 `rounded` 快照测试各 1；设置项写进 `cordis.patch.yml` 并有默认值。
+- **完成**（2026-10-21）：`graphStyle`（rounded/angular，`lanePath` 参数化）、`graphColours`（循环自定义调色板）、
+  签名徽标（G/B/U/X/Y/R → verified/bad/unknown/expired/revoked，N 不渲染）、emoji shortcode（10 个内置，
+  未知保留原样）、issue 链接（模板含 `{id}` 且仅数字）、`useMailmap`（host 侧 `--use-mailmap` + mailmap 占位符）、
+  标签页内快捷键 Ctrl/Cmd+H/R/F（焦点在输入控件时不触发）。
+  说明：**未做**全局快捷键注册（右侧栏没有 per-tab 快捷键作用域），已在代码注释中写明；`cordis.patch.yml` 的键
+  目前由 `apply()` 直接读取（`normalizeConfig` 导出形状保持不变，避免破坏既有测试）。
 
 ---
 
-### [ ] TODO-21 `fetchIntoLocalBranch`（P2）
+### [x] TODO-21 `fetchIntoLocalBranch`（P2）
 
 - **来源**：第 4 波实现时发现的缺口。`git fetch <remote> <branch>:<local>` 直接更新本地分支，
   与 `fetch`（只更新 remote-tracking ref）语义不同，客户端当前"拉取到本地分支"实际调用的是 `fetch`。
 - **文件**：`lib/git.js`（`performAction` 新增 case，argv `["fetch", remote, branch + ":" + local]`，两个 ref 都校验）、
   `lib/index.js`（`ACTION_FIELDS`）、`lib/client.js`（分支菜单项改为真正的该动作 + 失败提示）。
 - **验收**：本地分支被快进/更新且不切分支；非快进场景返回 git 原文；补 host 用例 2 + client 用例 1。
+- **完成**（2026-10-21）：host `fetchIntoLocalBranch`（`git fetch <remote> <branch>:<local>`，三个参数都过 ref 校验，
+  **不带** `--force`、**不带** `+` 前缀），非快进由 git 拒绝并把 stderr 透传；client 分支菜单已改用该动作。
 
 ## 非目标（明确不做）
 

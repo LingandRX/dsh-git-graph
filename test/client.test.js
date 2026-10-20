@@ -174,6 +174,23 @@ const CONTRACT_KEYS = [
   "remote.prune",
   "remote.close",
   "toolbar.remotes",
+  "tooltip.label",
+  "tooltip.containsHead",
+  "tooltip.notContainsHead",
+  "tooltip.branches",
+  "tooltip.tags",
+  "tooltip.stashes",
+  "tooltip.overflow",
+  "tooltip.currentBranch",
+  "tooltip.loading",
+  "tooltip.error",
+  "detail.signature",
+  "detail.signatureVerified",
+  "detail.signatureBad",
+  "detail.signatureUnknown",
+  "detail.signatureExpired",
+  "detail.signatureRevoked",
+  "detail.signer",
   "common.refresh",
   "common.close",
 ];
@@ -274,7 +291,9 @@ function loadInternals() {
         "branchFilterOptions, branchRequestValue, toggleBranchSelection, graphRequest, COMMIT_ORDER_OPTIONS, " +
         "ActionDialog, Toolbar, FindBar, BranchFilterBar, CommitList, commitActionItems, refActionItems, " +
         "insertMenuItems, stashIndex, commitHasChildren, outputLines, ACTION_CHECKS, RESET_MODES, " +
-        "TagDetails, RemotesPanel, UncommittedView, DetailView }",
+        "TagDetails, RemotesPanel, UncommittedView, DetailView, presentationOf, laneColor, richTextParts, " +
+        "signatureBadge, containsSummary, tooltipPosition, createLruCache, isTypingTarget, shortcutFor, " +
+        "fileRowKey, RichText, SignatureBadge, CommitTooltip, RepoLabel }",
     ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
@@ -2130,4 +2149,354 @@ test("DetailView offers merge, rebase, drop and reset and disables drop with a r
   assert.equal(merge.props.disabled, false);
   const open = collectElements(DetailView({ ...baseProps, dropDisabledReason: "" }));
   assert.equal(open.find((element) => element.type === "button" && element.children.join("") === "action.dropCommit").props.disabled, false);
+});
+
+// ── wave 5: presentation, rich text, signatures ─────────────────────────────
+
+test("presentationOf normalizes the graph presentation settings", () => {
+  const { presentationOf } = loadInternals();
+  const defaults = presentationOf(null);
+  assert.deepEqual(plain(defaults), {
+    graphStyle: "rounded",
+    graphColours: [],
+    showSignature: false,
+    showEmoji: true,
+    issueUrlTemplate: "",
+  });
+  const configured = presentationOf({
+    presentation: {
+      graphStyle: "angular",
+      graphColours: ["#111", "", 7, "#222"],
+      showSignature: true,
+      showEmoji: false,
+      issueUrlTemplate: "https://example.com/issues/{id}",
+      useMailmap: true,
+    },
+  });
+  assert.deepEqual(plain(configured), {
+    graphStyle: "angular",
+    graphColours: ["#111", "#222"],
+    showSignature: true,
+    showEmoji: false,
+    issueUrlTemplate: "https://example.com/issues/{id}",
+  });
+  // An unknown style falls back, and a template without {id} is disabled.
+  const fallback = presentationOf({ presentation: { graphStyle: "bogus", issueUrlTemplate: "https://example.com/issues/" } });
+  assert.equal(fallback.graphStyle, "rounded");
+  assert.equal(fallback.issueUrlTemplate, "");
+});
+
+test("lanePath draws rounded curves or angular elbows", () => {
+  const { lanePath } = loadInternals();
+  assert.equal(lanePath(9, 0, 9, 38, "angular"), "M9 0 L9 38", "vertical segments are straight in both styles");
+  assert.equal(lanePath(9, 0, 9, 38), "M9 0 L9 38");
+  assert.match(lanePath(9, 0, 23, 38, "rounded"), /^M9 0 C9 19, 23 19, 23 38$/);
+  assert.equal(lanePath(9, 0, 23, 38, "angular"), "M9 0 L9 19 L23 19 L23 38");
+  assert.match(lanePath(9, 0, 23, 38), /^M9 0 C9 19/, "the default stays rounded");
+});
+
+test("laneColor cycles the presentation palette when one is configured", () => {
+  const { laneColor } = loadInternals();
+  const palette = ["#111111", "#222222"];
+  assert.equal(laneColor(0, palette), "#111111");
+  assert.equal(laneColor(1, palette), "#222222");
+  assert.equal(laneColor(2, palette), "#111111");
+  assert.equal(laneColor(0, []), "#5B8CFF", "an empty palette keeps the built-in lane palette");
+  assert.equal(laneColor(0, null), "#5B8CFF");
+});
+
+test("richTextParts renders known emoji and leaves unknown shortcodes literal", () => {
+  const { richTextParts } = loadInternals();
+  const parts = richTextParts(":rocket: ship :unknown: :bug:", { showEmoji: true });
+  assert.deepEqual(Array.from(parts, (part) => part.type), ["emoji", "text", "emoji"]);
+  assert.equal(parts[0].text, "\u{1F680}");
+  assert.equal(parts[0].shortcode, ":rocket:");
+  assert.equal(parts[1].text, " ship :unknown: ", "an unknown shortcode stays literal");
+  assert.equal(parts[2].text, "\u{1F41B}");
+  const off = richTextParts(":rocket:", { showEmoji: false });
+  assert.deepEqual(Array.from(off, (part) => part.type), ["text"]);
+  assert.equal(off[0].text, ":rocket:");
+  assert.deepEqual(Array.from(richTextParts("", {})), []);
+});
+
+test("richTextParts links only numeric issue references from a valid template", () => {
+  const { richTextParts } = loadInternals();
+  const presentation = { showEmoji: false, issueUrlTemplate: "https://example.com/issues/{id}" };
+  const parts = richTextParts("fix #12 and #7", presentation);
+  assert.deepEqual(Array.from(parts, (part) => part.type), ["text", "issue", "text", "issue"]);
+  assert.equal(parts[1].text, "#12");
+  assert.equal(parts[1].href, "https://example.com/issues/12");
+  assert.equal(parts[3].href, "https://example.com/issues/7");
+  const suffixed = richTextParts("#12x", presentation);
+  assert.equal(suffixed[0].href, "https://example.com/issues/12");
+  assert.equal(suffixed[1].text, "x");
+  // Non-numeric or a template without {id} never becomes a link.
+  assert.deepEqual(Array.from(richTextParts("#abc #", presentation), (part) => part.type), ["text"]);
+  assert.deepEqual(Array.from(richTextParts("#1", { issueUrlTemplate: "https://example.com/" }), (part) => part.type), ["text"]);
+});
+
+test("RichText renders anchors and emoji as React nodes only", () => {
+  const { RichText } = loadInternals();
+  const tree = RichText({
+    text: "fix #12 :tada:",
+    presentation: { showEmoji: true, issueUrlTemplate: "https://example.com/issues/{id}" },
+  });
+  const elements = collectElements(tree);
+  const anchor = elements.find((element) => element.type === "a");
+  assert.equal(anchor.props.href, "https://example.com/issues/12");
+  assert.equal(anchor.props.target, "_blank");
+  assert.equal(anchor.props.rel, "noreferrer noopener");
+  assert.equal(anchor.children.join(""), "#12");
+  const emoji = elements.find((element) => element.type === "span" && element.props.className === "dgg-emoji");
+  assert.equal(emoji.children.join(""), "\u{1F389}");
+  assert.equal(emoji.props.role, "img");
+  assert.equal(RichText({ text: "", presentation: {} }), null);
+});
+
+test("signatureBadge maps git signature statuses and renders nothing for N", () => {
+  const { signatureBadge, SignatureBadge } = loadInternals();
+  const shape = (signature) => {
+    const badge = signatureBadge(signature);
+    return badge === null ? null : { status: badge.status, labelKey: badge.labelKey, tone: badge.tone, signer: badge.signer };
+  };
+  assert.deepEqual(shape({ status: "G", signer: "Ann", keyId: "k" }), { status: "G", labelKey: "detail.signatureVerified", tone: "good", signer: "Ann" });
+  assert.equal(shape({ status: "B" }).tone, "bad");
+  assert.equal(shape({ status: "U" }).labelKey, "detail.signatureUnknown");
+  assert.equal(shape({ status: "X" }).labelKey, "detail.signatureExpired");
+  assert.equal(shape({ status: "Y" }).labelKey, "detail.signatureExpired");
+  assert.equal(shape({ status: "R" }).labelKey, "detail.signatureRevoked");
+  assert.equal(shape({ status: "N" }), null);
+  assert.equal(shape(null), null);
+  assert.equal(signatureBadge(null), null);
+
+  const verified = collectElements(SignatureBadge({ t: (key) => key, signature: { status: "G", signer: "Ann" } }));
+  assert.ok(verified.some((element) => element.props.className === "dgg-signature dgg-signature-good"));
+  assert.ok(verified.some((element) => element.props.className === "dgg-signature-signer" && element.children.join("") === "Ann"));
+  assert.ok(verified.some((element) => element.children.join("") === "detail.signatureVerified"));
+  assert.equal(SignatureBadge({ t: (key) => key, signature: { status: "N" } }), null);
+});
+
+test("DetailView renders the signature badge and rich subject and body", () => {
+  const { DetailView } = loadInternals();
+  const commit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000,
+    committerName: "Ann", committerEmail: "ann@x", committerTime: 1700000000,
+    subject: "Fix :bug: #7", body: "Body :rocket: #9", refs: [],
+    signature: { status: "G", signer: "Ann", keyId: "k" },
+    stats: { files: 0, insertions: 0, deletions: 0 }, files: [],
+  };
+  const common = {
+    t: (key) => key, commit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+  };
+  const shown = collectElements(DetailView({
+    ...common,
+    presentation: { showSignature: true, showEmoji: true, issueUrlTemplate: "https://example.com/issues/{id}", graphStyle: "rounded", graphColours: [] },
+  }));
+  const badge = shown.find((element) => typeof element.type === "function" && element.type.name === "SignatureBadge");
+  assert.ok(badge, "showSignature renders the badge");
+  assert.equal(badge.props.signature.status, "G");
+  const rich = shown.filter((element) => typeof element.type === "function" && element.type.name === "RichText");
+  assert.deepEqual(Array.from(rich, (element) => element.props.text), ["Fix :bug: #7", "Body :rocket: #9"]);
+  const rendered = rich.flatMap((element) => collectElements(element.type(element.props)));
+  const links = rendered.filter((element) => element.type === "a");
+  assert.deepEqual(Array.from(links, (anchor) => anchor.props.href), ["https://example.com/issues/7", "https://example.com/issues/9"]);
+
+  // Without showSignature the badge is absent; without the template no anchors render.
+  const plainView = collectElements(DetailView({ ...common, presentation: { showSignature: false, showEmoji: false, issueUrlTemplate: "", graphStyle: "rounded", graphColours: [] } }));
+  assert.equal(plainView.some((element) => typeof element.type === "function" && element.type.name === "SignatureBadge"), false);
+  const plainRich = plainView.filter((element) => typeof element.type === "function" && element.type.name === "RichText");
+  const plainRendered = plainRich.flatMap((element) => collectElements(element.type(element.props)));
+  assert.equal(plainRendered.some((element) => element.type === "a"), false);
+});
+
+// ── wave 5: containment tooltip ─────────────────────────────────────────────
+
+test("containsSummary caps each list and counts the overflow", () => {
+  const { containsSummary } = loadInternals();
+  const branches = Array.from({ length: 8 }, (unused, index) => ({ name: "b" + index, isHead: index === 2 }));
+  const summary = containsSummary({ inHead: true, branches, tags: ["v1", "v2"], stashes: [{ index: 0, shortName: "stash@{0}" }] }, 6);
+  assert.equal(summary.inHead, true);
+  assert.equal(summary.branches.length, 6);
+  assert.equal(summary.branches[2].isHead, true);
+  assert.equal(summary.tags.length, 2);
+  assert.equal(summary.stashes.length, 1);
+  assert.equal(summary.hidden, 2, "only the branch list overflows here");
+  const capped = containsSummary({ inHead: false, branches, tags: ["t1", "t2"], stashes: [{ index: 0 }, { index: 1 }] }, 1);
+  assert.equal(capped.branches.length, 1);
+  assert.equal(capped.tags.length, 1);
+  assert.equal(capped.stashes.length, 1);
+  assert.equal(capped.hidden, 7 + 1 + 1);
+  assert.deepEqual(plain(containsSummary(null, 6)), { inHead: false, branches: [], tags: [], stashes: [], hidden: 0 });
+});
+
+test("tooltipPosition clamps the tooltip near the pointer", () => {
+  const { tooltipPosition } = loadInternals();
+  assert.deepEqual(plain(tooltipPosition({ x: 20, y: 30 }, { width: 260, height: 170 }, { width: 900, height: 700 })), { left: 34, top: 48 });
+  assert.deepEqual(plain(tooltipPosition({ x: 880, y: 680 }, { width: 260, height: 170 }, { width: 900, height: 700 })), { left: 634, top: 524 });
+  assert.deepEqual(plain(tooltipPosition({ x: -10, y: Number.NaN }, { width: 260, height: 170 }, { width: 0, height: 0 })), { left: 6, top: 18 });
+});
+
+test("createLruCache evicts the least recently used entry", () => {
+  const { createLruCache } = loadInternals();
+  const cache = createLruCache(2);
+  assert.equal(cache.limit(), 2);
+  cache.set("a", { value: 1 });
+  cache.set("b", { value: 2 });
+  assert.equal(cache.get("a").value, 1, "reading refreshes recency");
+  cache.set("c", { value: 3 });
+  assert.equal(cache.has("b"), false, "the least recently used entry is evicted");
+  assert.equal(cache.has("a"), true);
+  assert.equal(cache.size(), 2);
+  cache.set("a", { value: 4 });
+  assert.equal(cache.get("a").value, 4, "an existing key updates in place");
+  assert.equal(cache.size(), 2);
+  cache.delete("a");
+  assert.equal(cache.size(), 1);
+  cache.clear();
+  assert.equal(cache.size(), 0);
+});
+
+test("CommitTooltip renders containment, branches, tags, stashes and overflow", () => {
+  const { CommitTooltip } = loadInternals();
+  const t = (key, params) => (params === undefined ? key : key + JSON.stringify(params));
+  const tree = CommitTooltip({
+    t,
+    hover: {
+      hash: "h1",
+      status: "ready",
+      x: 12,
+      y: 34,
+      data: {
+        inHead: true,
+        branches: [{ name: "main", isHead: true }, { name: "dev", isHead: false }],
+        tags: ["v1.0"],
+        stashes: [{ index: 0, shortName: "stash@{0}" }],
+      },
+    },
+  });
+  assert.equal(tree.props.role, "tooltip");
+  assert.equal(tree.props["aria-label"], "tooltip.label");
+  assert.deepEqual(plain(tree.props.style), { position: "fixed", left: 12, top: 34 });
+  const text = collectElements(tree).map((element) => element.children.join("")).join(" | ");
+  assert.match(text, /tooltip\.containsHead/);
+  assert.match(text, /main \(tooltip\.currentBranch\)/);
+  assert.match(text, /dev/);
+  assert.match(text, /tooltip\.branches/);
+  assert.match(text, /tooltip\.tags/);
+  assert.match(text, /v1\.0/);
+  assert.match(text, /tooltip\.stashes/);
+  assert.match(text, /stash@\{0\}/);
+
+  const loading = collectElements(CommitTooltip({ t, hover: { hash: "h1", status: "loading", x: 0, y: 0 } }));
+  assert.ok(loading.some((element) => element.children.join("") === "tooltip.loading"));
+  const failed = collectElements(CommitTooltip({ t, hover: { hash: "h1", status: "error", error: "boom", x: 0, y: 0 } }));
+  assert.match(failed.map((element) => element.children.join("")).join(" | "), /boom/);
+  assert.equal(CommitTooltip({ t, hover: null }), null);
+
+  // The "+N" line only appears when something is hidden.
+  const capped = collectElements(
+    CommitTooltip({
+      t,
+      hover: {
+        hash: "h1", status: "ready", x: 0, y: 0,
+        data: { inHead: false, branches: Array.from({ length: 8 }, (unused, index) => ({ name: "b" + index })), tags: [], stashes: [] },
+      },
+    }),
+  );
+  assert.ok(capped.some((element) => String(element.children.join("")).includes("tooltip.overflow")));
+});
+
+test("CommitRow starts and hides the hover tooltip from pointer and focus", () => {
+  const { CommitRow } = loadInternals();
+  const events = [];
+  const tree = CommitRow({
+    t: (key) => key,
+    commit: { hash: "h1", abbrev: "h1", subject: "Sub :tada:", parents: [], refs: [] },
+    row: { lane: 0, edges: [], merge: false, root: false },
+    laneCount: 1,
+    refIndex: new Map(),
+    presentation: { graphStyle: "angular", graphColours: ["#111111"], showEmoji: true, issueUrlTemplate: "", showSignature: false },
+    onHoverStart: (hash, point) => events.push({ type: "start", hash, point }),
+    onHoverEnd: () => events.push({ type: "end" }),
+  });
+  const rich = collectElements(tree).find((element) => typeof element.type === "function" && element.type.name === "RichText");
+  assert.equal(rich.props.text, "Sub :tada:");
+  const lanes = collectElements(tree).find((element) => typeof element.type === "function" && element.type.name === "LaneGraph");
+  assert.equal(lanes.props.style, "angular");
+  assert.deepEqual(Array.from(lanes.props.colours), ["#111111"]);
+  tree.props.onPointerEnter({ clientX: 40, clientY: 50 });
+  tree.props.onFocus({ currentTarget: { getBoundingClientRect: () => ({ left: 5, top: 10, bottom: 48 }) } });
+  tree.props.onPointerLeave();
+  tree.props.onBlur();
+  assert.deepEqual(Array.from(events, (event) => event.type), ["start", "start", "end", "end"]);
+  assert.deepEqual(plain(events[0].point), { x: 40, y: 50 });
+  assert.deepEqual(plain(events[1].point), { x: 5, y: 48 }, "keyboard focus anchors under the row");
+  assert.equal(events[0].hash, "h1");
+});
+
+// ── wave 5: tab-scoped shortcuts and stable file keys ───────────────────────
+
+test("shortcutFor recognises tab-scoped shortcuts and ignores typing targets", () => {
+  const { shortcutFor, isTypingTarget } = loadInternals();
+  assert.equal(shortcutFor({ key: "h", ctrlKey: true }), "head");
+  assert.equal(shortcutFor({ key: "H", metaKey: true }), "head");
+  assert.equal(shortcutFor({ key: "r", ctrlKey: true }), "refresh");
+  assert.equal(shortcutFor({ key: "f", metaKey: true }), "find");
+  assert.equal(shortcutFor({ key: "h" }), null, "a bare key is not a shortcut");
+  assert.equal(shortcutFor({ key: "h", ctrlKey: true, altKey: true }), null);
+  assert.equal(shortcutFor({ key: "x", ctrlKey: true }), null);
+  assert.equal(shortcutFor(null), null);
+  // Typing targets never trigger shortcuts, even with the modifier held.
+  for (const tagName of ["INPUT", "TEXTAREA", "SELECT", "input"]) {
+    assert.equal(isTypingTarget({ tagName }), true);
+    assert.equal(shortcutFor({ key: "f", ctrlKey: true }, { tagName }), null);
+  }
+  assert.equal(isTypingTarget({ isContentEditable: true }), true);
+  assert.equal(shortcutFor({ key: "f", ctrlKey: true }, { tagName: "BUTTON" }), "find");
+  assert.equal(isTypingTarget(null), false);
+});
+
+test("fileRowKey is stable by path for review state and diff caching", () => {
+  const { fileRowKey } = loadInternals();
+  assert.equal(fileRowKey({ path: "src/a.js" }, 3), "src/a.js");
+  assert.equal(fileRowKey({ path: "src/b.js" }, 9), "src/b.js");
+  assert.equal(fileRowKey({ path: "" }, 3), "file:3");
+  assert.equal(fileRowKey(null, 0), "file:0");
+});
+
+test("CommitList wires the HEAD scroll target, hover callbacks and presentation", () => {
+  const { CommitList, layoutGraph } = loadInternals();
+  const commits = [
+    { hash: "a1", abbrev: "a1", subject: "One", parents: [] },
+    { hash: "b1", abbrev: "b1", subject: "Two", parents: ["a1"] },
+  ];
+  const value = { commits, refs: [] };
+  const layout = layoutGraph(commits);
+  const tree = CommitList({
+    t: (key) => key,
+    value,
+    layout,
+    refIndex: new Map(),
+    presentation: { graphStyle: "angular", graphColours: [], showEmoji: true, issueUrlTemplate: "", showSignature: false },
+    headHash: "b1",
+    scrollHeadKey: 1,
+    uncommitted: null,
+    indices: [0, 1],
+    activeHash: "",
+    onSelect() {},
+    onMenu() {},
+    onRefMenu() {},
+    onHoverStart() {},
+    onHoverEnd() {},
+  });
+  const rows = collectElements(tree).filter((element) => typeof element.type === "function" && element.type.name === "CommitRow");
+  assert.equal(rows.length, 2);
+  const headRow = rows.find((row) => row.props.commit.hash === "b1");
+  assert.ok(headRow.props.rowRef !== null && typeof headRow.props.rowRef === "object", "the HEAD row carries the scroll ref");
+  assert.equal(headRow.props.presentation.graphStyle, "angular");
+  assert.equal(typeof rows[0].props.onHoverStart, "function");
+  assert.equal(typeof rows[0].props.onHoverEnd, "function");
 });
