@@ -59,6 +59,28 @@ const CONTRACT_KEYS = [
   "action.success",
   "action.failed",
   "action.cleanWorktreeWarning",
+  "menu.label",
+  "menu.noCommit",
+  "menu.busy",
+  "menu.mergeRevert",
+  "menu.compare",
+  "uncommitted.title",
+  "uncommitted.total",
+  "uncommitted.counts",
+  "uncommitted.staged",
+  "uncommitted.unstaged",
+  "uncommitted.untracked",
+  "uncommitted.empty",
+  "uncommitted.error",
+  "uncommitted.untrackedHint",
+  "compare.title",
+  "compare.base",
+  "compare.head",
+  "compare.swap",
+  "compare.exit",
+  "compare.empty",
+  "compare.error",
+  "compare.hint",
   "common.refresh",
   "common.close",
 ];
@@ -147,11 +169,16 @@ function instrument(exports) {
 /**
  * Load the module with the internal pure helpers and the presentational
  * `RefChips` component attached.
- * @returns `{ layoutGraph, classifyRefs, groupFiles, lanePath, RefChips }`.
+ * @returns the internal helpers and views the tests exercise directly.
  */
 function loadInternals() {
   const { exported } = loadModule(
-    instrument("__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal }"),
+    instrument(
+      "__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal, " +
+        "commitMenuItems, menuStep, placeMenu, menuStillValid, uncommittedSummary, uncommittedRow, buildListModel, " +
+        "uncommittedGroups, diffRequest, diffCacheKey, compareRequest, CommitMenu, CommitRow, UncommittedRow, " +
+        "UncommittedView, CompareView }",
+    ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
   return exported.__test;
@@ -662,4 +689,424 @@ test("isUnmergedRefusal only escalates a not-merged branch deletion", () => {
   // Other actions never offer force delete.
   assert.equal(isUnmergedRefusal("checkoutBranch", "not fully merged"), false);
   assert.equal(isUnmergedRefusal("deleteBranch", undefined), false);
+});
+
+// ── TODO-3 / TODO-4: commit context menu ─────────────────────────────────────
+
+/** JSON copy of a value built in the client's realm, for structural compares. */
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+test("commitMenuItems lists the six commit actions in order", () => {
+  const { commitMenuItems } = loadInternals();
+  const items = commitMenuItems({ hash: "a1", parents: ["p1"] }, undefined);
+  assert.deepEqual(Array.from(items, (item) => item.id), [
+    "checkout-commit",
+    "create-branch",
+    "cherry-pick",
+    "revert",
+    "create-tag",
+    "copy-hash",
+  ]);
+  assert.deepEqual(Array.from(items, (item) => item.kind), [
+    "checkoutCommit",
+    "createBranch",
+    "cherryPick",
+    "revert",
+    "createTag",
+    "copyHash",
+  ]);
+  assert.deepEqual(Array.from(items, (item) => item.labelKey), [
+    "action.checkoutCommit",
+    "action.createBranch",
+    "action.cherryPick",
+    "action.revert",
+    "action.createTag",
+    "toolbar.copyHash",
+  ]);
+  for (const item of items) assert.equal(item.disabled, undefined);
+});
+
+test("commitMenuItems disables a direct revert of a merge commit", () => {
+  const { commitMenuItems } = loadInternals();
+  const merge = commitMenuItems({ hash: "m1", parents: ["p1", "p2"] }, undefined);
+  const revert = merge.find((item) => item.kind === "revert");
+  assert.equal(revert.disabled, true);
+  assert.equal(revert.reasonKey, "menu.mergeRevert");
+  // Only the revert is blocked; everything else still works on a merge commit.
+  assert.deepEqual(Array.from(merge.filter((item) => item.disabled === true), (item) => item.id), ["revert"]);
+  const linear = commitMenuItems({ hash: "a1", parents: ["p1"] }, undefined);
+  assert.equal(linear.find((item) => item.kind === "revert").disabled, undefined);
+});
+
+test("commitMenuItems disables everything while running or without a commit", () => {
+  const { commitMenuItems } = loadInternals();
+  const busy = commitMenuItems({ hash: "a1", parents: [] }, { busy: true });
+  assert.equal(busy.length, 6);
+  for (const item of busy) {
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.busy");
+  }
+  const missing = commitMenuItems({}, undefined);
+  assert.equal(missing.length, 6);
+  for (const item of missing) {
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.noCommit");
+  }
+  // No hash means no comparison either, even with a base selected.
+  const comparable = commitMenuItems({}, { baseHash: "b1" });
+  assert.equal(comparable.some((item) => item.kind === "compare"), false);
+});
+
+test("commitMenuItems offers a comparison with the selected commit", () => {
+  const { commitMenuItems } = loadInternals();
+  const items = commitMenuItems({ hash: "h1", parents: ["p1"] }, { baseHash: "b1", baseAbbrev: "bbbbbbb" });
+  assert.equal(items.length, 7);
+  const compare = items.find((item) => item.id === "compare");
+  assert.ok(compare, "the comparison item should exist");
+  assert.equal(compare.kind, "compare");
+  assert.equal(compare.labelKey, "menu.compare");
+  assert.deepEqual(plain(compare.params), { base: "bbbbbbb" });
+  // The item sits before the copy action, and never compares a commit with itself.
+  const ids = Array.from(items, (item) => item.id);
+  assert.ok(ids.indexOf("compare") < ids.indexOf("copy-hash"));
+  const self = commitMenuItems({ hash: "b1", parents: [] }, { baseHash: "b1" });
+  assert.equal(self.some((item) => item.kind === "compare"), false);
+});
+
+test("menuStep moves through enabled items with wrapping", () => {
+  const { menuStep } = loadInternals();
+  const items = [{}, { disabled: true }, {}, { disabled: true }, {}];
+  assert.equal(menuStep(items, 0, "ArrowDown"), 2);
+  assert.equal(menuStep(items, 2, "ArrowDown"), 4);
+  assert.equal(menuStep(items, 4, "ArrowDown"), 0, "ArrowDown wraps to the first item");
+  assert.equal(menuStep(items, 0, "ArrowUp"), 4, "ArrowUp wraps to the last item");
+  assert.equal(menuStep(items, 3, "ArrowDown"), 0, "a disabled active item snaps to the first");
+  assert.equal(menuStep(items, 2, "Home"), 0);
+  assert.equal(menuStep(items, 2, "End"), 4);
+  assert.equal(menuStep(items, 2, "Tab"), -1);
+  assert.equal(menuStep([{ disabled: true }], 0, "ArrowDown"), -1);
+  assert.equal(menuStep([], 0, "ArrowDown"), -1);
+});
+
+test("placeMenu clamps a fixed menu inside the viewport", () => {
+  const { placeMenu } = loadInternals();
+  assert.deepEqual(plain(placeMenu({ x: 10, y: 10 }, { width: 190, height: 180 }, { width: 600, height: 500 })), {
+    left: 10,
+    top: 10,
+    maxHeight: 492,
+  });
+  assert.deepEqual(plain(placeMenu({ x: 500, y: 400 }, { width: 190, height: 180 }, { width: 600, height: 500 })), {
+    left: 406,
+    top: 316,
+    maxHeight: 492,
+  });
+  // No viewport (server-side or hidden tab): keep the pointer position, floor at the margin.
+  assert.deepEqual(plain(placeMenu({ x: -5, y: Number.NaN }, { width: 190, height: 180 }, { width: 0, height: 0 })), {
+    left: 4,
+    top: 4,
+    maxHeight: 0,
+  });
+});
+
+test("menuStillValid drops a menu whose commit left the page", () => {
+  const { menuStillValid } = loadInternals();
+  const page = [{ hash: "a1" }, { hash: "b1" }];
+  assert.equal(menuStillValid({ hash: "a1" }, page), true);
+  assert.equal(menuStillValid({ hash: "c1" }, page), false, "a refreshed page can drop the menu's commit");
+  assert.equal(menuStillValid(null, page), false);
+  assert.equal(menuStillValid({}, page), false);
+  assert.equal(menuStillValid({ hash: "a1" }, null), false);
+});
+
+test("CommitMenu renders role=menu with menuitems, reasons and the active item", () => {
+  const { commitMenuItems, CommitMenu } = loadInternals();
+  const items = commitMenuItems({ hash: "m1", parents: ["p1", "p2"] }, { baseHash: "b1", baseAbbrev: "bbbbbbb" });
+  const tree = CommitMenu({
+    t: (key) => key,
+    menu: { style: { left: 12, top: 24 } },
+    items,
+    activeIndex: 2,
+    menuRef: { current: null },
+  });
+  assert.equal(tree.type, "div");
+  assert.equal(tree.props.role, "menu");
+  assert.equal(tree.props.className, "dgg-context-menu");
+  assert.equal(tree.props["aria-label"], "menu.label");
+  assert.deepEqual(plain(tree.props.style), { left: 12, top: 24 });
+
+  const elements = collectElements(tree);
+  const menuitems = elements.filter((element) => element.props.role === "menuitem");
+  assert.equal(menuitems.length, items.length);
+  assert.equal(menuitems[0].type, "button");
+  const disabled = menuitems.filter((element) => element.props.disabled === true);
+  assert.equal(disabled.length, 1);
+  assert.equal(disabled[0].props.title, "menu.mergeRevert");
+  assert.equal(menuitems[0].props.title, undefined);
+  assert.match(menuitems[2].props.className, /dgg-context-item-active/);
+  assert.doesNotMatch(menuitems[0].props.className, /dgg-context-item-active/);
+  for (const item of menuitems) assert.equal(item.props.tabIndex, -1);
+});
+
+test("CommitRow opens the commit menu from pointer and keyboard", () => {
+  const { CommitRow } = loadInternals();
+  const selected = [];
+  const menus = [];
+  const commit = { hash: "a1", abbrev: "a1", subject: "Subject", parents: ["p1"] };
+  const tree = CommitRow({
+    t: (key) => key,
+    commit,
+    row: { lane: 0, edges: [], merge: false, root: false },
+    laneCount: 1,
+    refIndex: new Map(),
+    selected: true,
+    onSelect: (hash, options) => selected.push({ hash, options }),
+    onMenu: (point) => menus.push(point),
+  });
+  assert.equal(tree.type, "button");
+  assert.equal(tree.props["aria-haspopup"], "menu");
+  assert.match(tree.props.className, /dgg-row-selected/);
+
+  let prevented = 0;
+  tree.props.onContextMenu({ preventDefault: () => { prevented += 1; }, clientX: 120, clientY: 80 });
+  assert.equal(prevented, 1, "the native context menu is suppressed");
+  assert.deepEqual({ x: menus[0].x, y: menus[0].y, hash: menus[0].hash }, { x: 120, y: 80, hash: "a1" });
+  assert.equal(menus[0].commit.subject, "Subject");
+
+  tree.props.onKeyDown({
+    key: "ContextMenu",
+    preventDefault: () => { prevented += 1; },
+    currentTarget: { getBoundingClientRect: () => ({ left: 5, top: 10, height: 38 }) },
+  });
+  assert.equal(prevented, 2);
+  assert.deepEqual({ x: menus[1].x, y: menus[1].y }, { x: 29, y: 29 });
+
+  tree.props.onKeyDown({ key: "F10", shiftKey: true, preventDefault: () => {}, currentTarget: { getBoundingClientRect: () => ({ left: 0, top: 0, height: 40 }) } });
+  assert.equal(menus.length, 3, "Shift+F10 opens the menu too");
+  tree.props.onKeyDown({ key: "F10", shiftKey: false, preventDefault: () => {}, currentTarget: { getBoundingClientRect: () => ({ left: 0, top: 0, height: 40 }) } });
+  assert.equal(menus.length, 3, "plain F10 does not");
+
+  tree.props.onClick({ metaKey: false, ctrlKey: true });
+  tree.props.onClick({ metaKey: true, ctrlKey: false });
+  tree.props.onClick({ metaKey: false, ctrlKey: false });
+  assert.deepEqual(selected.map((entry) => entry.options.compare), [true, true, false]);
+  assert.deepEqual(selected.map((entry) => entry.hash), ["a1", "a1", "a1"]);
+});
+
+// ── TODO-6: the synthetic uncommitted row ────────────────────────────────────
+
+test("uncommittedSummary falls back to the graph's dirty count", () => {
+  const { uncommittedSummary } = loadInternals();
+  const counted = uncommittedSummary({ isRepo: true, counts: { staged: 1, unstaged: 2, untracked: 0 } }, 9);
+  assert.deepEqual(plain(counted), { staged: 1, unstaged: 2, untracked: 0, listed: 3, dirty: 9, total: 3, visible: true });
+
+  // The counts route has not answered yet (or the host predates it): use dirty.
+  const fallback = uncommittedSummary(null, 3);
+  assert.equal(fallback.visible, true);
+  assert.equal(fallback.total, 3);
+  assert.deepEqual(plain([fallback.staged, fallback.unstaged, fallback.untracked]), [0, 0, 0]);
+
+  assert.equal(uncommittedSummary(null, 0).visible, false);
+  assert.equal(uncommittedSummary({ isRepo: false, counts: { staged: 1 } }, 5).visible, false);
+  const garbage = uncommittedSummary({ counts: { staged: -2, unstaged: Number.NaN, untracked: "3" } }, -1);
+  assert.deepEqual(plain([garbage.staged, garbage.unstaged, garbage.untracked, garbage.visible]), [0, 0, 0, false]);
+});
+
+test("uncommittedRow only appears for a non-zero, in-repo summary", () => {
+  const { uncommittedSummary, uncommittedRow } = loadInternals();
+  assert.equal(uncommittedRow(uncommittedSummary(null, 0)), null);
+  assert.equal(uncommittedRow(null), null);
+  const row = uncommittedRow(uncommittedSummary({ isRepo: true, counts: { staged: 1, unstaged: 0, untracked: 2 } }, 3));
+  assert.deepEqual(plain(row), { key: "uncommitted", total: 3, counts: { staged: 1, unstaged: 0, untracked: 2 } });
+});
+
+test("buildListModel never feeds the synthetic row to layoutGraph", () => {
+  const { buildListModel, layoutGraph } = loadInternals();
+  const commits = [
+    { hash: "c3", parents: ["c2"] },
+    { hash: "c2", parents: ["c1"] },
+    { hash: "c1", parents: [] },
+  ];
+  const hidden = buildListModel(commits, { visible: false, total: 0, staged: 0, unstaged: 0, untracked: 0 });
+  const shown = buildListModel(commits, { visible: true, total: 2, staged: 1, unstaged: 1, untracked: 0 });
+  assert.equal(hidden.synthetic, null);
+  assert.ok(shown.synthetic !== null);
+  assert.equal(hidden.rowCount, 3);
+  assert.equal(shown.rowCount, 4);
+  // The invariant: displaying the row cannot move a lane or a commit.
+  assert.equal(JSON.stringify(shown.layout), JSON.stringify(hidden.layout));
+  assert.equal(JSON.stringify(shown.layout), JSON.stringify(layoutGraph(commits)));
+  assert.equal(shown.layout.rows.length, commits.length);
+  assert.equal(shown.commits.length, commits.length);
+  assert.doesNotMatch(JSON.stringify(shown.layout), /uncommitted/);
+});
+
+test("UncommittedRow renders the dashed synthetic row with localized counts", () => {
+  const { UncommittedRow } = loadInternals();
+  const selected = [];
+  const t = (key, params) => (params === undefined ? key : key + "(" + Object.values(params).join(",") + ")");
+  const tree = UncommittedRow({
+    t,
+    summary: { key: "uncommitted", total: 3, counts: { staged: 1, unstaged: 1, untracked: 1 } },
+    onSelect: () => selected.push(true),
+  });
+  assert.equal(tree.type, "button");
+  assert.match(tree.props.className, /dgg-row-uncommitted/);
+  assert.match(tree.props["aria-label"], /^uncommitted\.title /);
+  const text = collectElements(tree).map((element) => element.children.join("")).join(" ");
+  assert.match(text, /uncommitted\.title/);
+  assert.match(text, /uncommitted\.counts\(1,1,1\)/);
+  tree.props.onClick();
+  assert.equal(selected.length, 1);
+});
+
+test("uncommittedGroups maps working-tree sections to diff scopes", () => {
+  const { uncommittedGroups } = loadInternals();
+  const groups = uncommittedGroups({
+    isRepo: true,
+    staged: [{ status: "M", path: "a" }],
+    unstaged: [{ status: "M", path: "b" }],
+    untracked: [{ status: "A", path: "c" }],
+  });
+  assert.deepEqual(Array.from(groups, (group) => group.id), ["staged", "unstaged", "untracked"]);
+  assert.deepEqual(Array.from(groups, (group) => group.scope), ["staged", "unstaged", "unstaged"]);
+  assert.deepEqual(Array.from(groups, (group) => group.labelKey), ["uncommitted.staged", "uncommitted.unstaged", "uncommitted.untracked"]);
+  assert.equal(groups[0].hintKey, undefined);
+  assert.equal(groups[1].hintKey, undefined);
+  assert.equal(groups[2].hintKey, "uncommitted.untrackedHint");
+  assert.deepEqual(Array.from(uncommittedGroups({ staged: [], unstaged: null, untracked: "x" })), []);
+  assert.deepEqual(Array.from(uncommittedGroups(null)), []);
+});
+
+test("UncommittedView wires file rows to staged/unstaged scopes", () => {
+  const { UncommittedView } = loadInternals();
+  const tree = UncommittedView({
+    t: (key) => key,
+    value: {
+      isRepo: true,
+      counts: { staged: 1, unstaged: 1, untracked: 1 },
+      staged: [{ status: "M", path: "staged.js" }],
+      unstaged: [{ status: "M", path: "unstaged.js" }],
+      untracked: [{ status: "A", path: "new.md" }],
+    },
+    sessionId: "s1",
+    cache: { current: new Map() },
+  });
+  assert.equal(tree.props.className, "dgg-uncommitted");
+  const rows = collectElements(tree).filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.deepEqual(Array.from(rows, (row) => row.props.file.path), ["staged.js", "unstaged.js", "new.md"]);
+  assert.deepEqual(Array.from(rows, (row) => row.props.scope), ["staged", "unstaged", "unstaged"]);
+  assert.equal(rows[2].props.emptyHintKey, "uncommitted.untrackedHint");
+  const headings = collectElements(tree)
+    .filter((element) => element.type === "h3")
+    .map((element) => element.children.join(""));
+  assert.deepEqual(headings, ["uncommitted.staged (1)", "uncommitted.unstaged (1)", "uncommitted.untracked (1)"]);
+});
+
+// ── TODO-7: comparison view ─────────────────────────────────────────────────
+
+test("compareRequest builds the compare route body", () => {
+  const { compareRequest } = loadInternals();
+  assert.deepEqual(plain(compareRequest({ sessionId: "s1", base: "b1", head: "h1" })), { sessionId: "s1", base: "b1", head: "h1" });
+  const empty = compareRequest(null);
+  assert.equal(empty.sessionId, undefined);
+  assert.deepEqual(plain(empty), { base: "", head: "" });
+});
+
+test("diffRequest builds each scope's body and a matching cache key", () => {
+  const { diffRequest, diffCacheKey } = loadInternals();
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", hash: "h1", file: "a.txt", status: "M" })), {
+    sessionId: "s1",
+    scope: "commit",
+    file: "a.txt",
+    hash: "h1",
+    status: "M",
+  });
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", scope: "staged", file: "a.txt" })), {
+    sessionId: "s1",
+    scope: "staged",
+    file: "a.txt",
+  });
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", scope: "unstaged", file: "a.txt", oldPath: "b.txt" })), {
+    sessionId: "s1",
+    scope: "unstaged",
+    file: "a.txt",
+    oldPath: "b.txt",
+  });
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", scope: "compare", base: "b1", head: "h1", file: "a.txt" })), {
+    sessionId: "s1",
+    scope: "compare",
+    file: "a.txt",
+    base: "b1",
+    head: "h1",
+  });
+  // An unknown scope degrades to a commit diff rather than sending nonsense.
+  assert.equal(diffRequest({ scope: "bogus", file: "a.txt" }).scope, "commit");
+
+  assert.equal(diffCacheKey({ hash: "h1", file: "a.txt" }), "commit|h1|a.txt|");
+  assert.equal(diffCacheKey({ scope: "staged", file: "a.txt" }), "staged||a.txt|");
+  assert.equal(diffCacheKey({ scope: "compare", base: "b1", head: "h1", file: "a.txt" }), "compare|b1..h1|a.txt|");
+  assert.equal(diffCacheKey({ hash: "h1", file: "a.txt", oldPath: "b.txt" }), "commit|h1|a.txt|b.txt");
+});
+
+test("CompareView shows both abbrevs, a swap button and compare-scoped rows", () => {
+  const { CompareView } = loadInternals();
+  const swapped = [];
+  const exited = [];
+  const tree = CompareView({
+    t: (key) => key,
+    pair: { base: "b1fullhash", head: "h1fullhash" },
+    value: {
+      base: "b1fullhash",
+      head: "h1fullhash",
+      baseAbbrev: "bbbbbbb",
+      headAbbrev: "hhhhhhh",
+      stats: { files: 1, insertions: 2, deletions: 1 },
+      files: [{ status: "M", path: "a.txt", added: 2, removed: 1, binary: false }],
+    },
+    status: "ready",
+    error: null,
+    sessionId: "s1",
+    cache: { current: new Map() },
+    onSwap: () => swapped.push(true),
+    onExit: () => exited.push(true),
+    onRetry: () => {},
+  });
+  assert.equal(tree.props.className, "dgg-compare");
+  const elements = collectElements(tree);
+  const codes = elements.filter((element) => element.type === "code");
+  assert.deepEqual(codes.map((element) => element.children.join("")), ["bbbbbbb", "hhhhhhh"]);
+  assert.deepEqual(codes.map((element) => element.props.title), ["b1fullhash", "h1fullhash"]);
+  const swap = elements.find((element) => element.props["aria-label"] === "compare.swap");
+  assert.ok(swap, "the swap control should be present");
+  swap.props.onClick();
+  assert.equal(swapped.length, 1);
+  const exit = elements.find((element) => element.type === "button" && element.children.join("") === "compare.exit");
+  exit.props.onClick();
+  assert.equal(exited.length, 1);
+  const rows = elements.filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].props.scope, "compare");
+  assert.equal(rows[0].props.base, "b1fullhash");
+  assert.equal(rows[0].props.head, "h1fullhash");
+});
+
+test("CompareView renders loading, error and empty states", () => {
+  const { CompareView } = loadInternals();
+  const base = {
+    t: (key) => key,
+    pair: { base: "b1", head: "h1" },
+    sessionId: "s1",
+    cache: { current: new Map() },
+    onSwap: () => {},
+    onExit: () => {},
+    onRetry: () => {},
+  };
+  const loading = CompareView({ ...base, value: null, status: "loading", error: null });
+  assert.ok(collectElements(loading).some((element) => typeof element.type === "function" && element.type.name === "LoadingState"));
+  const failed = CompareView({ ...base, value: null, status: "error", error: "boom" });
+  const errorState = collectElements(failed).find((element) => typeof element.type === "function" && element.type.name === "ErrorState");
+  assert.ok(errorState, "an error status should render the retry state");
+  assert.equal(errorState.props.message, "boom");
+  const empty = CompareView({ ...base, value: { base: "b1", head: "h1", files: [] }, status: "ready", error: null });
+  assert.ok(collectElements(empty).some((element) => element.type === "p" && element.children.join("") === "compare.empty"));
 });

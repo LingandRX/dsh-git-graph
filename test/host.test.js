@@ -4,7 +4,8 @@
  * Every repository used here is created under `os.tmpdir()` and removed afterwards;
  * the workspace itself is never used as a test repository. The suite exercises the
  * git layer directly, the four Fetch routes and the `git_graph` tool definition
- * through a fake Cordis context, including the error envelopes.
+ * through a fake Cordis context, including the error envelopes. Wave-2 coverage adds
+ * uncommitted worktree state, diff scopes and commit comparison.
  */
 
 import assert from "node:assert/strict";
@@ -23,6 +24,8 @@ const GRAPH_PATH = "/api/dsh-git-graph/graph";
 const COMMIT_PATH = "/api/dsh-git-graph/commit";
 const DIFF_PATH = "/api/dsh-git-graph/diff";
 const ACTION_PATH = "/api/dsh-git-graph/action";
+const UNCOMMITTED_PATH = "/api/dsh-git-graph/uncommitted";
+const COMPARE_PATH = "/api/dsh-git-graph/compare";
 
 /** Filesystem and git fixtures shared by the suite. */
 const fixture = {
@@ -74,6 +77,14 @@ function commitAll(cwd, message, body) {
   if (typeof body === "string" && body.length > 0) args.push("-m", body);
   runGit(args, cwd, nextDates());
   return runGit(["rev-parse", "HEAD"], cwd).trim();
+}
+
+/** Create one additional repository fixture under the shared temporary root. */
+function createScratchRepo(name) {
+  const directory = path.join(fixture.root, name);
+  fs.mkdirSync(directory);
+  runGit(["init", "-q", "-b", "main"], directory);
+  return directory;
 }
 
 /** Build one commit message fixture repository with branches, a merge, rename, binary and a large file. */
@@ -634,8 +645,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 4);
-  assert.equal(second.routes.size, 4);
+  assert.equal(first.routes.size, 6);
+  assert.equal(second.routes.size, 6);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -654,9 +665,9 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the four POST Fetch routes", () => {
+test("apply registers exactly the six POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
-  assert.deepEqual(routes, [ACTION_PATH, COMMIT_PATH, DIFF_PATH, GRAPH_PATH].sort());
+  assert.deepEqual(routes, [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, DIFF_PATH, GRAPH_PATH, UNCOMMITTED_PATH].sort());
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
     assert.equal(route.requestBody, "buffered");
@@ -671,7 +682,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 4);
+  assert.equal(noTools.routes.size, 6);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -1052,4 +1063,296 @@ test("BAD_REQUEST failures carry no git output", async () => {
   assert.equal(bad.ok, false);
   assert.equal(bad.error.code, "BAD_REQUEST");
   assert.equal(bad.error.output, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Wave 2: uncommitted state, diff scopes and commit comparison
+// ---------------------------------------------------------------------------
+
+test("readUncommitted splits staged, unstaged and untracked entries", async () => {
+  const dir = createScratchRepo("uncommitted-state");
+  writeFile(path.join(dir, "keep.txt"), "keep\n");
+  writeFile(path.join(dir, "keep-deleted.txt"), "keep deleted\n");
+  writeFile(path.join(dir, "del-staged.txt"), "delete me\n");
+  writeFile(path.join(dir, "rename-me.txt"), "rename me\n");
+  writeFile(path.join(dir, "mm.txt"), "mm\n");
+  const base = commitAll(dir, "base");
+
+  // staged only
+  writeFile(path.join(dir, "staged-only.txt"), "staged\n");
+  runGit(["add", "staged-only.txt"], dir);
+  // unstaged modification
+  writeFile(path.join(dir, "keep.txt"), "keep changed\n");
+  // unstaged deletion
+  fs.rmSync(path.join(dir, "keep-deleted.txt"));
+  // untracked
+  writeFile(path.join(dir, "untracked.md"), "untracked\n");
+  // staged, then modified again: one record in BOTH buckets, each with its own letter
+  writeFile(path.join(dir, "both.txt"), "both staged\n");
+  runGit(["add", "both.txt"], dir);
+  writeFile(path.join(dir, "both.txt"), "both staged and changed\n");
+  // tracked file modified, staged, then modified again: `MM` (M staged AND M unstaged)
+  writeFile(path.join(dir, "mm.txt"), "mm staged\n");
+  runGit(["add", "mm.txt"], dir);
+  writeFile(path.join(dir, "mm.txt"), "mm staged and changed\n");
+  // staged rename and staged deletion
+  runGit(["mv", "rename-me.txt", "renamed.txt"], dir);
+  runGit(["rm", "-q", "del-staged.txt"], dir);
+
+  const value = await api.readUncommitted(dir);
+  assert.equal(value.isRepo, true);
+  assert.equal(value.repoPath, fs.realpathSync(dir));
+  assert.deepEqual(value.head, { branch: "main", hash: base, detached: false });
+
+  const stagedByPath = new Map(value.staged.map((entry) => [entry.path, entry]));
+  const unstagedByPath = new Map(value.unstaged.map((entry) => [entry.path, entry]));
+  const untrackedByPath = new Map(value.untracked.map((entry) => [entry.path, entry]));
+
+  assert.deepEqual(stagedByPath.get("staged-only.txt"), { status: "A", path: "staged-only.txt", oldPath: null });
+  assert.deepEqual(stagedByPath.get("both.txt"), { status: "A", path: "both.txt", oldPath: null });
+  assert.deepEqual(stagedByPath.get("renamed.txt"), { status: "R", path: "renamed.txt", oldPath: "rename-me.txt" });
+  assert.deepEqual(stagedByPath.get("del-staged.txt"), { status: "D", path: "del-staged.txt", oldPath: null });
+  assert.deepEqual(stagedByPath.get("mm.txt"), { status: "M", path: "mm.txt", oldPath: null });
+
+  assert.deepEqual(unstagedByPath.get("keep.txt"), { status: "M", path: "keep.txt", oldPath: null });
+  assert.deepEqual(unstagedByPath.get("keep-deleted.txt"), { status: "D", path: "keep-deleted.txt", oldPath: null });
+  assert.deepEqual(unstagedByPath.get("both.txt"), { status: "M", path: "both.txt", oldPath: null });
+  assert.deepEqual(unstagedByPath.get("mm.txt"), { status: "M", path: "mm.txt", oldPath: null });
+  assert.equal(unstagedByPath.has("staged-only.txt"), false);
+
+  assert.deepEqual(untrackedByPath.get("untracked.md"), { status: "A", path: "untracked.md", oldPath: null });
+
+  assert.deepEqual(value.counts, { staged: 5, unstaged: 4, untracked: 1 });
+  assert.equal(value.counts.staged, value.staged.length);
+  assert.equal(value.counts.unstaged, value.unstaged.length);
+  assert.equal(value.counts.untracked, value.untracked.length);
+});
+
+test("readUncommitted reports NOT_A_REPO and handles an unborn repository", async () => {
+  const outside = await api.readUncommitted(fixture.empty);
+  assert.equal(outside.isRepo, false);
+  assert.equal(outside.error, "NOT_A_REPO");
+  assert.equal(typeof outside.message, "string");
+  assert.deepEqual([outside.staged, outside.unstaged, outside.untracked], [[], [], []]);
+  assert.deepEqual(outside.counts, { staged: 0, unstaged: 0, untracked: 0 });
+
+  const dir = createScratchRepo("uncommitted-unborn");
+  writeFile(path.join(dir, "first.txt"), "first\n");
+  runGit(["add", "first.txt"], dir);
+  writeFile(path.join(dir, "loose.txt"), "loose\n");
+  const value = await api.readUncommitted(dir);
+  assert.equal(value.isRepo, true);
+  assert.equal(value.head.branch, "main");
+  assert.equal(value.head.hash, null);
+  assert.deepEqual(value.staged, [{ status: "A", path: "first.txt", oldPath: null }]);
+  assert.deepEqual(value.untracked, [{ status: "A", path: "loose.txt", oldPath: null }]);
+  assert.deepEqual(value.counts, { staged: 1, unstaged: 0, untracked: 1 });
+});
+
+test("readDiff scopes produce different patches for the same path", async () => {
+  const dir = createScratchRepo("diff-scopes");
+  writeFile(path.join(dir, "scope.txt"), "one\ntwo\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "scope.txt"), "one\ntwo\nthree\n");
+  runGit(["add", "scope.txt"], dir);
+  writeFile(path.join(dir, "scope.txt"), "one\ntwo\nthree\nfour\n");
+
+  const staged = await api.readDiff(dir, { scope: "staged", path: "scope.txt" });
+  const unstaged = await api.readDiff(dir, { scope: "unstaged", path: "scope.txt" });
+  const committed = await api.readDiff(dir, { scope: "commit", hash: base, path: "scope.txt" });
+  const defaulted = await api.readDiff(dir, { hash: base, path: "scope.txt" });
+
+  assert.equal(staged.binary, false);
+  assert.match(staged.patch, /^\+three$/m);
+  assert.equal(staged.patch.includes("+four"), false);
+  assert.match(unstaged.patch, /^\+four$/m);
+  assert.equal(unstaged.patch.includes("+three"), false);
+  assert.match(committed.patch, /^\+one$/m);
+  assert.equal(committed.patch.includes("+three"), false);
+  assert.notEqual(staged.patch, unstaged.patch);
+  assert.equal(committed.patch, defaulted.patch, "an omitted scope keeps commit behavior");
+});
+
+test("readDiff compare scope diffs two commits and validates its endpoints", async () => {
+  const dir = createScratchRepo("diff-compare");
+  writeFile(path.join(dir, "move-me.txt"), "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+  writeFile(path.join(dir, "change.txt"), "a\n");
+  const base = commitAll(dir, "base");
+  runGit(["mv", "move-me.txt", "moved.txt"], dir);
+  writeFile(path.join(dir, "change.txt"), "a\nb\n");
+  const head = commitAll(dir, "head");
+
+  const rename = await api.readDiff(dir, { scope: "compare", base, head, path: "moved.txt", oldPath: "move-me.txt" });
+  assert.equal(rename.binary, false);
+  assert.match(rename.patch, /^rename from move-me\.txt$/m);
+  assert.match(rename.patch, /^rename to moved\.txt$/m);
+  const change = await api.readDiff(dir, { scope: "compare", base, head, path: "change.txt" });
+  assert.match(change.patch, /^\+b$/m);
+
+  await assert.rejects(api.readDiff(dir, { scope: "bogus", path: "change.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { scope: "compare", head, path: "change.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { scope: "compare", base, path: "change.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { scope: "compare", base: "-x", head, path: "change.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { scope: "staged", path: "-x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { path: "change.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(fixture.empty, { scope: "unstaged", path: "x.txt" }), (error) => error.code === "NOT_A_REPO");
+});
+
+test("compareCommits reports tree-to-tree files, stats and abbreviations", async () => {
+  const dir = createScratchRepo("compare-api");
+  writeFile(path.join(dir, "a.txt"), "one\ntwo\n");
+  writeFile(path.join(dir, "move-me.txt"), "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+  writeFile(path.join(dir, "bin.dat"), Buffer.from([0, 1, 2, 3]));
+  writeFile(path.join(dir, "gone.txt"), "gone\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "a.txt"), "one\ntwo\nthree\n");
+  runGit(["mv", "move-me.txt", "moved.txt"], dir);
+  writeFile(path.join(dir, "bin.dat"), Buffer.from([0, 9, 2, 3, 4]));
+  runGit(["rm", "-q", "gone.txt"], dir);
+  const head = commitAll(dir, "head");
+
+  const value = await api.compareCommits(dir, { base, head });
+  assert.equal(value.base, base);
+  assert.equal(value.head, head);
+  assert.equal(value.baseAbbrev, base.slice(0, 7));
+  assert.equal(value.headAbbrev, head.slice(0, 7));
+  assert.equal(value.stats.files, value.files.length);
+  assert.equal(
+    value.stats.insertions,
+    value.files.reduce((total, file) => total + file.added, 0),
+  );
+  assert.equal(
+    value.stats.deletions,
+    value.files.reduce((total, file) => total + file.removed, 0),
+  );
+
+  const modified = value.files.find((file) => file.path === "a.txt");
+  assert.deepEqual(modified, { status: "M", path: "a.txt", oldPath: null, added: 1, removed: 0, binary: false });
+  const moved = value.files.find((file) => file.path === "moved.txt");
+  assert.equal(moved.status, "R");
+  assert.equal(moved.oldPath, "move-me.txt");
+  const binary = value.files.find((file) => file.path === "bin.dat");
+  assert.equal(binary.binary, true);
+  assert.equal(binary.added, 0);
+  assert.equal(binary.removed, 0);
+  const deleted = value.files.find((file) => file.path === "gone.txt");
+  assert.equal(deleted.status, "D");
+  assert.equal(deleted.removed, 1);
+
+  const identical = await api.compareCommits(dir, { base: head, head });
+  assert.deepEqual(identical.files, []);
+  assert.deepEqual(identical.stats, { files: 0, insertions: 0, deletions: 0 });
+  assert.equal(identical.baseAbbrev, head.slice(0, 7));
+  assert.equal(identical.headAbbrev, head.slice(0, 7));
+});
+
+test("compareCommits validates refs and reports git failures", async () => {
+  const dir = createScratchRepo("compare-errors");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const base = commitAll(dir, "base");
+
+  await assert.rejects(api.compareCommits(dir, {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { base }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { head: base }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { base: "-rf", head: base }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { base, head: "a..b" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { base, head: "does-not-exist" }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.compareCommits(fixture.empty, { base, head: base }), (error) => error.code === "NOT_A_REPO");
+});
+
+test("uncommitted and compare routes return values and BAD_REQUEST envelopes", async () => {
+  const dir = createScratchRepo("route-uncommitted");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "other.txt"), "other\n");
+  const head = commitAll(dir, "second");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  runGit(["add", "tracked.txt"], dir);
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\nthree\n");
+  writeFile(path.join(dir, "new.txt"), "new\n");
+
+  const scratchHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const uncommitted = await post(scratchHost, UNCOMMITTED_PATH, {});
+    assert.equal(uncommitted.ok, true);
+    assert.equal(uncommitted.value.isRepo, true);
+    assert.equal(uncommitted.value.repoPath, fs.realpathSync(dir));
+    assert.equal(uncommitted.value.workspacePath, dir);
+    assert.equal(uncommitted.value.head.hash, head);
+    assert.deepEqual(uncommitted.value.staged, [{ status: "M", path: "tracked.txt", oldPath: null }]);
+    assert.deepEqual(uncommitted.value.unstaged, [{ status: "M", path: "tracked.txt", oldPath: null }]);
+    assert.deepEqual(uncommitted.value.untracked, [{ status: "A", path: "new.txt", oldPath: null }]);
+    assert.deepEqual(uncommitted.value.counts, { staged: 1, unstaged: 1, untracked: 1 });
+
+    const staged = await post(scratchHost, DIFF_PATH, { scope: "staged", file: "tracked.txt" });
+    assert.equal(staged.ok, true);
+    assert.match(staged.value.patch, /^\+two$/m);
+    assert.equal(staged.value.patch.includes("+three"), false);
+    const unstaged = await post(scratchHost, DIFF_PATH, { scope: "unstaged", file: "tracked.txt" });
+    assert.equal(unstaged.ok, true);
+    assert.match(unstaged.value.patch, /^\+three$/m);
+
+    const missingHash = await post(scratchHost, DIFF_PATH, { file: "tracked.txt" });
+    assert.equal(missingHash.ok, false);
+    assert.equal(missingHash.error.code, "BAD_REQUEST");
+    const badScope = await post(scratchHost, DIFF_PATH, { scope: "bogus", file: "tracked.txt" });
+    assert.equal(badScope.ok, false);
+    assert.equal(badScope.error.code, "BAD_REQUEST");
+    const missingCompareEnd = await post(scratchHost, DIFF_PATH, { scope: "compare", base, file: "tracked.txt" });
+    assert.equal(missingCompareEnd.ok, false);
+    assert.equal(missingCompareEnd.error.code, "BAD_REQUEST");
+
+    const compare = await post(scratchHost, COMPARE_PATH, { base, head });
+    assert.equal(compare.ok, true);
+    assert.equal(compare.value.baseAbbrev, base.slice(0, 7));
+    assert.equal(compare.value.headAbbrev, head.slice(0, 7));
+    assert.deepEqual(compare.value.files, [{ status: "A", path: "other.txt", oldPath: null, added: 1, removed: 0, binary: false }]);
+    assert.deepEqual(compare.value.stats, { files: 1, insertions: 1, deletions: 0 });
+
+    const compareMissing = await post(scratchHost, COMPARE_PATH, { base });
+    assert.equal(compareMissing.ok, false);
+    assert.equal(compareMissing.error.code, "BAD_REQUEST");
+    const compareUnsafe = await post(scratchHost, COMPARE_PATH, { base: "-rf", head });
+    assert.equal(compareUnsafe.ok, false);
+    assert.equal(compareUnsafe.error.code, "BAD_REQUEST");
+    const compareUnknown = await post(scratchHost, COMPARE_PATH, { base, head: "missing-ref" });
+    assert.equal(compareUnknown.ok, false);
+    assert.equal(compareUnknown.error.code, "GIT_FAILED");
+    assert.equal(typeof compareUnknown.error.message, "string");
+
+    const outside = createHost({ config: undefined, defaultDirectory: fixture.empty });
+    try {
+      const notRepo = await post(outside, UNCOMMITTED_PATH, {});
+      assert.equal(notRepo.ok, true);
+      assert.equal(notRepo.value.isRepo, false);
+      assert.equal(notRepo.value.error, "NOT_A_REPO");
+    } finally {
+      outside.dispose();
+    }
+  } finally {
+    scratchHost.dispose();
+  }
+});
+
+test("git_graph still exposes exactly five read-only actions and never mutates", async () => {
+  const tool = host.tools[0];
+  assert.equal(tool.name, "git_graph");
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  assert.equal("scope" in tool.parameters.properties, false);
+  assert.equal("base" in tool.parameters.properties, false);
+  assert.equal("head" in tool.parameters.properties, false);
+  assert.deepEqual(tool.parameters.required, ["action"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+
+  const beforeHead = runGit(["rev-parse", "HEAD"], fixture.repo).trim();
+  const beforeStatus = runGit(["status", "--porcelain=v1", "-z"], fixture.repo);
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  await tool.execute({ action: "log", limit: 3 }, exec);
+  await tool.execute({ action: "show", commit: beforeHead }, exec);
+  await tool.execute({ action: "diff", commit: beforeHead, file: "docs/large.txt" }, exec);
+  await tool.execute({ action: "branches" }, exec);
+  await tool.execute({ action: "status" }, exec);
+  assert.equal(runGit(["rev-parse", "HEAD"], fixture.repo).trim(), beforeHead);
+  assert.equal(runGit(["status", "--porcelain=v1", "-z"], fixture.repo), beforeStatus);
 });
