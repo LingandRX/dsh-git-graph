@@ -1,0 +1,14 @@
+# dsh-git-graph — a Git commit graph for the right sidebar.
+#
+# One host row registers the API routes used by the browser half and the
+# read-only `git_graph` agent tool; the package's `dsh.client` declaration makes
+# the Web UI load `./lib/client.js`, which contributes the `git-graph` tab type
+# and its guide card in the right sidebar. Config values are read defensively:
+# `repoPath` pins a repository for every session (empty = session workspace).
+- insert:
+    - id: dsh-git-graph
+      name: dsh-git-graph
+      config:
+        repoPath: ""
+        maxCommits: 400
+        showRemoteBranches: true

@@ -1,0 +1,45 @@
+{
+  "name": "dsh-git-graph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Git commit graph in the DeepSeek Harness right sidebar: browse commits, branches, tags and diffs of the session workspace, with checkout / branch / cherry-pick / revert / tag actions and a read-only git_graph agent tool.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "lib/index.js",
+    "lib/git.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "git",
+    "git-graph",
+    "sidebar"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

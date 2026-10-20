@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Git Graph">
+  <defs>
+    <linearGradient id="dgg-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#33427A"/>
+      <stop offset="1" stop-color="#141B32"/>
+    </linearGradient>
+    <linearGradient id="dgg-main" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8FB4FF"/>
+      <stop offset="1" stop-color="#5B8CFF"/>
+    </linearGradient>
+    <linearGradient id="dgg-branch" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFC46B"/>
+      <stop offset="1" stop-color="#F08A3C"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="232" fill="url(#dgg-bg)"/>
+  <path d="M336 208 L336 816" fill="none" stroke="url(#dgg-main)" stroke-width="58" stroke-linecap="round"/>
+  <path d="M336 372 C336 470 648 440 648 540 L648 586 C648 686 336 656 336 754"
+        fill="none" stroke="url(#dgg-branch)" stroke-width="58" stroke-linecap="round"/>
+  <g fill="#F5F8FF">
+    <circle cx="336" cy="264" r="64"/>
+    <circle cx="336" cy="512" r="64"/>
+    <circle cx="336" cy="768" r="64"/>
+    <circle cx="648" cy="536" r="64"/>
+  </g>
+  <g fill="#33427A">
+    <circle cx="336" cy="264" r="26"/>
+    <circle cx="336" cy="512" r="26"/>
+    <circle cx="336" cy="768" r="26"/>
+    <circle cx="648" cy="536" r="26"/>
+  </g>
+  <g fill="#FFD98A">
+    <circle cx="336" cy="512" r="14"/>
+    <circle cx="648" cy="536" r="14"/>
+  </g>
+</svg>

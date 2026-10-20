@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git Graph (dsh-git-graph)",
+    "description": "Git commit graph in the right sidebar: browse commits, branches, tags and diffs of the session workspace, and run checkout / branch / cherry-pick / revert / tag actions."
+  }
+}
