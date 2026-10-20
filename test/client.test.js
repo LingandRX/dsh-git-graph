@@ -140,13 +140,51 @@ function instrument(exports) {
 }
 
 /**
- * Load the module with the internal pure helpers attached.
- * @returns `{ layoutGraph, classifyRefs, groupFiles, lanePath }`.
+ * Load the module with the internal pure helpers and the presentational
+ * `RefChips` component attached.
+ * @returns `{ layoutGraph, classifyRefs, groupFiles, lanePath, RefChips }`.
  */
 function loadInternals() {
-  const { exported } = loadModule(instrument("__test: { layoutGraph, classifyRefs, groupFiles, lanePath }"));
+  const { exported } = loadModule(
+    instrument("__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips }"),
+  );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
   return exported.__test;
+}
+
+/**
+ * Walk a fake-React element tree depth first.
+ * @param node - element, array or text produced by the fake React.
+ * @returns every element node in tree order.
+ */
+function collectElements(node) {
+  const found = [];
+  const visit = (value) => {
+    if (value === null || value === undefined || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    found.push(value);
+    visit(value.children);
+  };
+  visit(node);
+  return found;
+}
+
+/**
+ * Index of the map of host refs used by the chip classifier.
+ * @param refs - ref records shaped like the host's graph value.
+ * @returns a Map of full and short names to chip metadata.
+ */
+function refIndexFrom(refs) {
+  const index = new Map();
+  for (const ref of refs) {
+    const entry = { label: ref.shortName, kind: ref.type, name: ref.name, head: ref.head === true };
+    index.set(ref.name, entry);
+    index.set(ref.shortName, entry);
+  }
+  return index;
 }
 
 /**
@@ -457,6 +495,89 @@ test("classifyRefs marks branches, remotes, tags and HEAD", () => {
   assert.equal(classifyRefs(["main", "origin/dev"], index, 1).length, 1);
   const unknown = classifyRefs(["feature/x", "topic"], new Map(), 4);
   assert.deepEqual(Array.from(unknown, (chip) => chip.kind), ["remote", "branch"]);
+});
+
+test("classifyRefs keeps a branch at HEAD actionable", () => {
+  const { classifyRefs, RefChips } = loadInternals();
+  // Exactly the real shape: the host flags the current branch with head: true,
+  // and the commit lists HEAD and that branch as two separate decorations.
+  const index = refIndexFrom([
+    { name: "refs/heads/main", shortName: "main", type: "branch", hash: "a1", head: true },
+  ]);
+  const chips = classifyRefs(["HEAD", "main"], index, 4);
+  assert.equal(chips.length, 2);
+  assert.deepEqual(Array.from(chips.map((chip) => chip.label)), ["HEAD", "main"]);
+  assert.deepEqual(Array.from(chips.map((chip) => chip.kind)), ["head", "branch"]);
+  assert.deepEqual(Array.from(chips.map((chip) => chip.isHead)), [true, true]);
+
+  // Rendered with a pick handler: the branch is a button, HEAD stays a span.
+  const tree = RefChips({ chips, t: (key) => key, onPick: () => {} });
+  const elements = collectElements(tree);
+  const buttons = elements.filter((element) => element.type === "button");
+  const spans = elements.filter((element) => element.type === "span" && "title" in element.props);
+  assert.equal(buttons.length, 1, "only the branch chip should be actionable");
+  assert.equal(buttons[0].children.join(""), "main");
+  assert.match(buttons[0].props.className, /dgg-chip-branch/);
+  assert.match(buttons[0].props.className, /dgg-chip-head/, "the current branch keeps the head accent");
+  assert.equal(buttons[0].props.title, "action.checkoutBranch: main");
+  assert.equal(spans.length, 1, "HEAD must remain a non-actionable chip");
+  assert.equal(spans[0].children.join(""), "HEAD");
+  assert.match(spans[0].props.className, /dgg-chip-head/);
+
+  // Without a pick handler (the master list) both chips are inert spans.
+  const inert = collectElements(RefChips({ chips, t: (key) => key }));
+  assert.equal(inert.filter((element) => element.type === "button").length, 0);
+  assert.equal(inert.filter((element) => element.type === "span" && "title" in element.props).length, 2);
+});
+
+test("classifyRefs keeps HEAD -> branch and bare HEAD decorations as head chips", () => {
+  const { classifyRefs } = loadInternals();
+  const index = refIndexFrom([
+    { name: "refs/heads/main", shortName: "main", type: "branch", hash: "a1", head: true },
+  ]);
+  const arrow = classifyRefs(["HEAD -> main"], index, 4);
+  assert.equal(arrow.length, 1);
+  assert.equal(arrow[0].kind, "head");
+  assert.equal(arrow[0].isHead, true);
+  assert.equal(arrow[0].label, "main");
+  const bare = classifyRefs(["HEAD"], index, 4);
+  assert.equal(bare[0].kind, "head");
+  assert.equal(bare[0].isHead, true);
+  assert.equal(bare[0].label, "HEAD");
+});
+
+test("classifyRefs classifies unknown decorations by shape", () => {
+  const { classifyRefs } = loadInternals();
+  const unknown = classifyRefs(["feature/x", "topic", "tag: v2"], new Map(), 4);
+  assert.deepEqual(Array.from(unknown.map((chip) => chip.kind)), ["remote", "branch", "tag"]);
+  assert.deepEqual(Array.from(unknown.map((chip) => chip.label)), ["feature/x", "topic", "v2"]);
+  assert.deepEqual(Array.from(unknown.map((chip) => chip.isHead)), [false, false, false]);
+});
+
+test("classifyRefs keeps tags, remotes and head-flagged refs non-branch", () => {
+  const { classifyRefs, RefChips } = loadInternals();
+  const index = refIndexFrom([
+    { name: "refs/heads/main", shortName: "main", type: "branch", hash: "a1", head: true },
+    { name: "refs/remotes/origin/main", shortName: "origin/main", type: "remote", hash: "a1", head: true },
+    { name: "refs/tags/v1.0", shortName: "v1.0", type: "tag", hash: "a1", head: true },
+  ]);
+  const chips = classifyRefs(["origin/main", "tag: v1.0"], index, 4);
+  assert.deepEqual(Array.from(chips.map((chip) => chip.kind)), ["remote", "tag"]);
+  // `tag: v1.0` is classified from the decoration itself, so only the indexed
+  // remote carries its host head flag. Neither may borrow the branch accent,
+  // which `RefChips` also gates on the branch kind.
+  assert.deepEqual(Array.from(chips.map((chip) => chip.isHead)), [true, false]);
+
+  // Tags and remotes never become checkout buttons, even flagged as head.
+  const elements = collectElements(RefChips({ chips, t: (key) => key, onPick: () => {} }));
+  assert.equal(elements.filter((element) => element.type === "button").length, 0);
+  const spans = elements.filter((element) => element.type === "span" && "title" in element.props);
+  assert.equal(spans.length, 2);
+  assert.match(spans[0].props.className, /dgg-chip-remote/);
+  assert.doesNotMatch(spans[0].props.className, /dgg-chip-branch/);
+  assert.doesNotMatch(spans[0].props.className, /dgg-chip-head/);
+  assert.match(spans[1].props.className, /dgg-chip-tag/);
+  assert.doesNotMatch(spans[1].props.className, /dgg-chip-head/);
 });
 
 test("groupFiles groups by status letter in order", () => {
