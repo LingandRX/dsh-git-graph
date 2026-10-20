@@ -87,6 +87,19 @@ function createScratchRepo(name) {
   return directory;
 }
 
+/** Fixed ISO timestamp accepted by git's date environment variables. */
+function gitDate(seconds) {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d+Z$/, "+00:00");
+}
+
+/** Stage everything and commit at an explicit timestamp; returns the new commit hash. */
+function commitAt(cwd, seconds, message) {
+  runGit(["add", "-A"], cwd);
+  const date = gitDate(seconds);
+  runGit(["commit", "-q", "-m", message], cwd, { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+  return runGit(["rev-parse", "HEAD"], cwd).trim();
+}
+
 /** Build one commit message fixture repository with branches, a merge, rename, binary and a large file. */
 function buildFixtureRepository() {
   fixture.root = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-git-graph-test-"));
@@ -1355,4 +1368,280 @@ test("git_graph still exposes exactly five read-only actions and never mutates",
   await tool.execute({ action: "status" }, exec);
   assert.equal(runGit(["rev-parse", "HEAD"], fixture.repo).trim(), beforeHead);
   assert.equal(runGit(["status", "--porcelain=v1", "-z"], fixture.repo), beforeStatus);
+});
+
+// ---------------------------------------------------------------------------
+// Wave 3: renameBranch action and graph branch/order filters
+// ---------------------------------------------------------------------------
+
+test("performAction renameBranch renames a local branch and the route forwards it", async () => {
+  const dir = createScratchRepo("rename-branch");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  runGit(["branch", "old-name"], dir);
+
+  const renamed = await api.performAction(dir, "renameBranch", { name: "old-name", newName: "new-name" });
+  assert.equal(renamed.message, 'Renamed branch "old-name" to "new-name".');
+  assert.equal(typeof renamed.output, "string");
+  const branchList = runGit(["branch", "--list"], dir);
+  assert.match(branchList, /new-name/);
+  assert.equal(branchList.includes("old-name"), false);
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const viaRoute = await post(routeHost, ACTION_PATH, { action: "renameBranch", name: "new-name", newName: "route-name" });
+    assert.equal(viaRoute.ok, true);
+    assert.equal(viaRoute.value.message, 'Renamed branch "new-name" to "route-name".');
+    assert.match(runGit(["branch", "--list"], dir), /route-name/);
+  } finally {
+    routeHost.dispose();
+  }
+});
+
+test("renameBranch validates both names and reports a collision as GIT_FAILED", async () => {
+  const dir = createScratchRepo("rename-branch-errors");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  runGit(["branch", "source"], dir);
+  runGit(["branch", "taken"], dir);
+
+  const badRequests = [
+    {},
+    { name: "source" },
+    { newName: "only-new" },
+    { name: "-bad", newName: "fine" },
+    { name: "source", newName: "bad name" },
+    { name: "source", newName: "a..b" },
+    { name: "source", newName: "bad@{1}" },
+    { name: "source", newName: "x.lock" },
+    { name: "source", newName: "trailing/" },
+    { name: "source", newName: 42 },
+  ];
+  for (const args of badRequests) {
+    await assert.rejects(api.performAction(dir, "renameBranch", args), (error) => error.code === "BAD_REQUEST", JSON.stringify(args));
+  }
+  await assert.rejects(api.performAction(dir, "renameBranch", { name: "source", newName: "taken" }), (error) => error.code === "GIT_FAILED");
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const missing = await post(routeHost, ACTION_PATH, { action: "renameBranch", name: "source" });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "BAD_REQUEST");
+    const unsafe = await post(routeHost, ACTION_PATH, { action: "renameBranch", name: "source", newName: "-x" });
+    assert.equal(unsafe.ok, false);
+    assert.equal(unsafe.error.code, "BAD_REQUEST");
+    const collision = await post(routeHost, ACTION_PATH, { action: "renameBranch", name: "source", newName: "taken" });
+    assert.equal(collision.ok, false);
+    assert.equal(collision.error.code, "GIT_FAILED");
+    assert.equal(typeof collision.error.output, "string");
+  } finally {
+    routeHost.dispose();
+  }
+});
+
+test("readGraph branches filter restricts the walk and omitted/[] equal the default", async () => {
+  const dir = createScratchRepo("graph-branches");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  commitAll(dir, "root");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "feature.txt"), "feature\n");
+  commitAll(dir, "feature only");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "main.txt"), "main\n");
+  commitAll(dir, "main only");
+  runGit(["tag", "v1"], dir);
+
+  const strip = (value) => ({ ...value, generatedAt: 0 });
+  const full = await api.readGraph(dir, { maxCommits: 50 });
+  const explicitEmpty = await api.readGraph(dir, { maxCommits: 50, branches: [] });
+  assert.deepEqual(strip(explicitEmpty), strip(full), "branches: [] keeps the default walk byte-for-byte");
+
+  const mainOnly = await api.readGraph(dir, { maxCommits: 50, branches: ["main"] });
+  assert.deepEqual(
+    mainOnly.commits.map((commit) => commit.subject),
+    ["main only", "root"],
+  );
+  assert.equal(mainOnly.commits.some((commit) => commit.subject === "feature only"), false);
+  assert.ok(mainOnly.refs.some((ref) => ref.shortName === "feature"), "refs stay complete; only the walk is filtered");
+
+  const both = await api.readGraph(dir, { maxCommits: 50, branches: ["main", "feature"] });
+  assert.deepEqual(
+    both.commits.map((commit) => commit.subject).sort(),
+    ["feature only", "main only", "root"],
+  );
+
+  const byTag = await api.readGraph(dir, { maxCommits: 50, branches: ["v1"] });
+  assert.deepEqual(
+    byTag.commits.map((commit) => commit.subject),
+    ["main only", "root"],
+  );
+  const byHash = await api.readGraph(dir, { maxCommits: 50, branches: [runGit(["rev-parse", "HEAD"], dir).trim()] });
+  assert.deepEqual(
+    byHash.commits.map((commit) => commit.subject),
+    ["main only", "root"],
+  );
+
+  await assert.rejects(api.readGraph(dir, { branches: ["does-not-exist"] }), (error) => error.code === "BAD_REQUEST" && /does-not-exist/.test(error.message));
+  await assert.rejects(api.readGraph(dir, { branches: ["-bad"] }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readGraph(dir, { branches: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readGraph(dir, { branches: [42] }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(
+    api.readGraph(dir, { branches: Array.from({ length: 101 }, (_, index) => `branch-${index}`) }),
+    (error) => error.code === "BAD_REQUEST" && /too many/.test(error.message),
+  );
+});
+
+test("readGraph maps order values to the right git log flag", async () => {
+  const calls = [];
+  const fakeRun = async (argv) => {
+    calls.push([...argv]);
+    const ok = (stdout) => ({ stdout, stderr: "", code: 0 });
+    switch (argv[0]) {
+      case "rev-parse":
+        if (argv[1] === "--show-toplevel") return ok("/fake/repo\n");
+        if (argv[1] === "--abbrev-ref") return ok("main\n");
+        return ok(`${"a".repeat(40)}\n`);
+      case "status":
+        return ok("");
+      case "for-each-ref":
+        return ok("");
+      case "log":
+        return ok("");
+      default:
+        return ok("");
+    }
+  };
+  const fakeApi = createGitApi(fakeRun);
+
+  for (const [order, flag] of [
+    ["date", "--date-order"],
+    ["author-date", "--author-date-order"],
+    ["topo", "--topo-order"],
+  ]) {
+    calls.length = 0;
+    await fakeApi.readGraph("/fake/repo", { maxCommits: 2, order });
+    const logCall = calls.find((argv) => argv[0] === "log");
+    assert.ok(logCall !== undefined, `log ran for order ${order}`);
+    assert.equal(logCall[1], flag);
+    assert.ok(logCall.includes("--max-count=3"));
+    assert.ok(logCall.includes("--branches"));
+    assert.ok(logCall.includes("--tags"));
+    assert.equal(logCall[logCall.length - 1], "HEAD");
+  }
+
+  calls.length = 0;
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2 });
+  assert.equal(calls.find((argv) => argv[0] === "log")[1], "--date-order", "date is the default");
+
+  calls.length = 0;
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, branches: ["main", "origin/main"] });
+  const filteredLog = calls.find((argv) => argv[0] === "log");
+  assert.equal(filteredLog.includes("--branches"), false);
+  assert.equal(filteredLog.includes("--tags"), false);
+  assert.equal(filteredLog.includes("--remotes"), false);
+  assert.deepEqual(filteredLog.slice(-2), ["main", "origin/main"]);
+  const verifies = calls.filter((argv) => argv[0] === "rev-parse" && argv[1] === "--verify");
+  assert.equal(verifies.length, 2, "each filter is existence-checked");
+
+  await assert.rejects(fakeApi.readGraph("/fake/repo", { order: "sideways" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.readGraph("/fake/repo", { order: 42 }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.readGraph("/fake/repo", { branches: ["main", "bad ref"] }), (error) => error.code === "BAD_REQUEST");
+});
+
+test("readGraph topo order groups a branch line while date order interleaves it", async () => {
+  const dir = createScratchRepo("graph-order");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  commitAt(dir, 1_700_000_100, "root");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "f1.txt"), "f1\n");
+  commitAt(dir, 1_700_000_300, "feature one");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "m1.txt"), "m1\n");
+  commitAt(dir, 1_700_000_200, "main one");
+  runGit(["switch", "-q", "feature"], dir);
+  writeFile(path.join(dir, "f2.txt"), "f2\n");
+  commitAt(dir, 1_700_000_500, "feature two");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "m2.txt"), "m2\n");
+  commitAt(dir, 1_700_000_400, "main two");
+  const mergeDate = gitDate(1_700_000_600);
+  runGit(["merge", "-q", "--no-ff", "feature", "-m", "merge feature"], dir, { GIT_AUTHOR_DATE: mergeDate, GIT_COMMITTER_DATE: mergeDate });
+
+  const dateGraph = await api.readGraph(dir, { maxCommits: 50, order: "date" });
+  const topoGraph = await api.readGraph(dir, { maxCommits: 50, order: "topo" });
+  const dateSubjects = dateGraph.commits.map((commit) => commit.subject);
+  const topoSubjects = topoGraph.commits.map((commit) => commit.subject);
+
+  assert.deepEqual(dateSubjects, ["merge feature", "feature two", "main two", "feature one", "main one", "root"]);
+  assert.notDeepEqual(dateSubjects, topoSubjects, "--topo-order changes the observable order");
+  assert.equal(Math.abs(topoSubjects.indexOf("feature two") - topoSubjects.indexOf("feature one")), 1, "topo keeps the feature line together");
+  assert.equal(Math.abs(topoSubjects.indexOf("main two") - topoSubjects.indexOf("main one")), 1, "topo keeps the main line together");
+  assert.equal(topoSubjects[0], "merge feature");
+  assert.equal(topoSubjects[topoSubjects.length - 1], "root");
+});
+
+test("graph route forwards branches and order without changing the wire shape", async () => {
+  const dir = createScratchRepo("graph-route-filters");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  commitAll(dir, "root");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "feature.txt"), "feature\n");
+  commitAll(dir, "feature only");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "main.txt"), "main\n");
+  commitAll(dir, "main only");
+
+  const filterHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const filtered = await post(filterHost, GRAPH_PATH, { branches: ["main"], order: "topo" });
+    assert.equal(filtered.ok, true);
+    assert.deepEqual(
+      filtered.value.commits.map((commit) => commit.subject),
+      ["main only", "root"],
+    );
+    assert.equal("branches" in filtered.value, false, "filters are request-only");
+    assert.equal("order" in filtered.value, false, "filters are request-only");
+
+    const full = await post(filterHost, GRAPH_PATH, {});
+    assert.equal(full.ok, true);
+    assert.ok(full.value.commits.some((commit) => commit.subject === "feature only"));
+
+    const empty = await post(filterHost, GRAPH_PATH, { branches: [] });
+    assert.equal(empty.ok, true);
+    assert.equal(empty.value.commits.length, full.value.commits.length);
+
+    const badOrder = await post(filterHost, GRAPH_PATH, { order: "sideways" });
+    assert.equal(badOrder.ok, false);
+    assert.equal(badOrder.error.code, "BAD_REQUEST");
+
+    const unknownBranch = await post(filterHost, GRAPH_PATH, { branches: ["nope"] });
+    assert.equal(unknownBranch.ok, false);
+    assert.equal(unknownBranch.error.code, "BAD_REQUEST");
+    assert.match(unknownBranch.error.message, /nope/);
+
+    const badShape = await post(filterHost, GRAPH_PATH, { branches: "main" });
+    assert.equal(badShape.ok, false);
+    assert.equal(badShape.error.code, "BAD_REQUEST");
+  } finally {
+    filterHost.dispose();
+  }
+});
+
+test("git_graph tool shape stays untouched by graph filters and ordering", async () => {
+  const tool = host.tools[0];
+  assert.equal(tool.name, "git_graph");
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  assert.equal("branches" in tool.parameters.properties, false);
+  assert.equal("order" in tool.parameters.properties, false);
+  assert.deepEqual(tool.parameters.required, ["action"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  const log = await tool.execute({ action: "log", limit: 5 }, exec);
+  assert.equal(log.action, "log");
+  assert.equal(log.isRepo, true);
+  assert.equal(log.commits.length, 5);
+  const branches = await tool.execute({ action: "branches" }, exec);
+  assert.equal(branches.action, "branches");
 });

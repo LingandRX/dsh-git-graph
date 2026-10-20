@@ -81,6 +81,31 @@ const CONTRACT_KEYS = [
   "compare.empty",
   "compare.error",
   "compare.hint",
+  "action.renameBranch",
+  "action.oldBranchName",
+  "action.newBranchName",
+  "menu.refLabel",
+  "menu.copyName",
+  "menu.copyRef",
+  "menu.checkedOutBranch",
+  "menu.noRemotes",
+  "menu.noRef",
+  "find.label",
+  "find.placeholder",
+  "find.counter",
+  "find.noMatches",
+  "find.prev",
+  "find.next",
+  "find.close",
+  "filter.label",
+  "filter.all",
+  "filter.empty",
+  "filter.close",
+  "filter.current",
+  "order.label",
+  "order.date",
+  "order.authorDate",
+  "order.topo",
   "common.refresh",
   "common.close",
 ];
@@ -177,7 +202,9 @@ function loadInternals() {
       "__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal, " +
         "commitMenuItems, menuStep, placeMenu, menuStillValid, uncommittedSummary, uncommittedRow, buildListModel, " +
         "uncommittedGroups, diffRequest, diffCacheKey, compareRequest, CommitMenu, CommitRow, UncommittedRow, " +
-        "UncommittedView, CompareView }",
+        "UncommittedView, CompareView, refMenuItems, refCopyValue, refMenuStillValid, filterCommits, nextMatch, " +
+        "branchFilterOptions, branchRequestValue, toggleBranchSelection, graphRequest, COMMIT_ORDER_OPTIONS, " +
+        "ActionDialog, Toolbar, FindBar, BranchFilterBar, CommitList }",
     ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
@@ -1109,4 +1136,445 @@ test("CompareView renders loading, error and empty states", () => {
   assert.equal(errorState.props.message, "boom");
   const empty = CompareView({ ...base, value: { base: "b1", head: "h1", files: [] }, status: "ready", error: null });
   assert.ok(collectElements(empty).some((element) => element.type === "p" && element.children.join("") === "compare.empty"));
+});
+
+// ── TODO-5: branch / tag / remote ref-chip menus ─────────────────────────────
+
+test("refMenuItems offers branch actions and blocks deleting the checked-out branch", () => {
+  const { refMenuItems } = loadInternals();
+  const items = refMenuItems({ label: "feature", kind: "branch", isHead: false }, { currentBranch: "main" });
+  assert.deepEqual(Array.from(items, (item) => item.id), ["checkout-branch", "rename-branch", "delete-branch", "copy-ref"]);
+  assert.deepEqual(Array.from(items, (item) => item.kind), ["checkoutBranch", "renameBranch", "deleteBranch", "copyRef"]);
+  assert.deepEqual(Array.from(items, (item) => item.labelKey), [
+    "action.checkoutBranch",
+    "action.renameBranch",
+    "action.deleteBranch",
+    "menu.copyName",
+  ]);
+  for (const item of items) assert.equal(item.disabled, undefined);
+
+  // The checked-out branch may still be checked out (git accepts it) and renamed,
+  // but deleting it would be refused, so only that item is disabled with a reason.
+  const current = refMenuItems({ label: "main", kind: "branch", isHead: true }, { currentBranch: "main" });
+  const checkout = current.find((item) => item.kind === "checkoutBranch");
+  const rename = current.find((item) => item.kind === "renameBranch");
+  const remove = current.find((item) => item.kind === "deleteBranch");
+  assert.equal(checkout.disabled, undefined);
+  assert.equal(rename.disabled, undefined);
+  assert.equal(remove.disabled, true);
+  assert.equal(remove.reasonKey, "menu.checkedOutBranch");
+  // The current branch is recognised even without the isHead flag on the chip.
+  const byName = refMenuItems({ label: "main", kind: "branch", isHead: false }, { currentBranch: "main" });
+  assert.equal(byName.find((item) => item.kind === "deleteBranch").disabled, true);
+});
+
+test("refMenuItems offers tag and remote actions", () => {
+  const { refMenuItems } = loadInternals();
+  const tag = refMenuItems({ label: "v1.0", kind: "tag" }, { currentBranch: "main" });
+  assert.deepEqual(Array.from(tag, (item) => item.kind), ["deleteTag", "copyRef"]);
+  assert.deepEqual(Array.from(tag, (item) => item.labelKey), ["action.deleteTag", "menu.copyName"]);
+
+  const remote = refMenuItems({ label: "origin/main", kind: "remote", refName: "refs/remotes/origin/main" }, { hasRemotes: true });
+  assert.deepEqual(Array.from(remote, (item) => item.kind), ["copyRef", "fetch"]);
+  assert.deepEqual(Array.from(remote, (item) => item.labelKey), ["menu.copyRef", "action.fetch"]);
+  assert.equal(remote.find((item) => item.kind === "fetch").disabled, undefined);
+
+  // Without any remote, the fetch item explains itself instead of failing.
+  const noRemotes = refMenuItems({ label: "origin/main", kind: "remote" }, { hasRemotes: false });
+  const fetch = noRemotes.find((item) => item.kind === "fetch");
+  assert.equal(fetch.disabled, true);
+  assert.equal(fetch.reasonKey, "menu.noRemotes");
+  assert.equal(noRemotes.find((item) => item.kind === "copyRef").disabled, undefined);
+});
+
+test("refMenuItems returns nothing for HEAD and unknown chip kinds", () => {
+  const { refMenuItems } = loadInternals();
+  assert.deepEqual(Array.from(refMenuItems({ label: "HEAD", kind: "head", isHead: true }, {})), []);
+  assert.deepEqual(Array.from(refMenuItems({ label: "x", kind: "mystery" }, {})), []);
+  assert.deepEqual(Array.from(refMenuItems({ label: "", kind: "branch" }, {})), []);
+  assert.deepEqual(Array.from(refMenuItems(null, null)), []);
+});
+
+test("refMenuItems disables everything while an action runs", () => {
+  const { refMenuItems } = loadInternals();
+  const items = refMenuItems({ label: "dev", kind: "branch" }, { currentBranch: "main", busy: true });
+  assert.equal(items.length, 4);
+  for (const item of items) {
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.busy");
+  }
+  // Busy wins over the checked-out rule: the reason stays the transient one.
+  const current = refMenuItems({ label: "main", kind: "branch", isHead: true }, { currentBranch: "main", busy: true });
+  assert.equal(current.find((item) => item.kind === "deleteBranch").reasonKey, "menu.busy");
+});
+
+test("refCopyValue copies the short name for branches and the full ref for remotes", () => {
+  const { refCopyValue } = loadInternals();
+  assert.equal(refCopyValue({ label: "feature/x", kind: "branch" }), "feature/x");
+  assert.equal(refCopyValue({ label: "v1.0", kind: "tag" }), "v1.0");
+  assert.equal(refCopyValue({ label: "origin/main", kind: "remote", refName: "refs/remotes/origin/main" }), "refs/remotes/origin/main");
+  assert.equal(refCopyValue({ label: "origin/main", kind: "remote" }), "origin/main");
+  assert.equal(refCopyValue(null), "");
+});
+
+test("refMenuStillValid follows the ref list", () => {
+  const { refMenuStillValid } = loadInternals();
+  const refs = [
+    { name: "refs/heads/main", shortName: "main", type: "branch" },
+    { name: "refs/tags/v1", shortName: "v1", type: "tag" },
+  ];
+  assert.equal(refMenuStillValid({ label: "main" }, refs), true);
+  assert.equal(refMenuStillValid({ label: "v1" }, refs), true);
+  assert.equal(refMenuStillValid({ label: "gone" }, refs), false, "a refresh can drop the ref");
+  assert.equal(refMenuStillValid(null, refs), false);
+  assert.equal(refMenuStillValid({}, refs), false);
+  // Falls back to the full name when a ref record has no shortName.
+  assert.equal(refMenuStillValid({ label: "main" }, [{ name: "refs/heads/main" }]), true);
+});
+
+test("RefChips opens ref menus from buttons and from row spans", () => {
+  const { classifyRefs, RefChips } = loadInternals();
+  const index = refIndexFrom([
+    { name: "refs/heads/main", shortName: "main", type: "branch", hash: "a1", head: true },
+    { name: "refs/remotes/origin/main", shortName: "origin/main", type: "remote", hash: "a1" },
+    { name: "refs/tags/v1.0", shortName: "v1.0", type: "tag", hash: "a1" },
+  ]);
+  const chips = classifyRefs(["HEAD", "main", "tag: v1.0", "origin/main"], index, 8);
+  const picked = [];
+  const menus = [];
+
+  // Detail pane: chips are buttons; branch click checks out, others open the menu.
+  const detail = collectElements(
+    RefChips({
+      chips,
+      t: (key) => key,
+      buttons: true,
+      onPick: (chip) => picked.push(chip.label),
+      onRefMenu: (chip, point) => menus.push({ label: chip.label, point }),
+    }),
+  );
+  const buttons = detail.filter((element) => element.type === "button");
+  assert.equal(buttons.length, 3, "branch, tag and remote chips are buttons; HEAD is not");
+  assert.equal(buttons[0].children.join(""), "main");
+  assert.equal(buttons[0].props["aria-haspopup"], "menu");
+  buttons[0].props.onClick({ stopPropagation() {} });
+  assert.deepEqual(picked, ["main"], "a branch chip click is still checkout");
+  buttons[1].props.onClick({ stopPropagation() {} });
+  buttons[2].props.onClick({ stopPropagation() {} });
+  assert.deepEqual(Array.from(menus, (entry) => entry.label), ["v1.0", "origin/main"]);
+  let prevented = 0;
+  buttons[0].props.onContextMenu({ preventDefault: () => { prevented += 1; }, stopPropagation() {}, clientX: 30, clientY: 40 });
+  assert.equal(prevented, 1);
+  assert.deepEqual({ x: menus[2].point.x, y: menus[2].point.y }, { x: 30, y: 40 });
+  buttons[2].props.onKeyDown({ key: "F10", shiftKey: true, preventDefault() {}, stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 5, top: 9, bottom: 21 }) } });
+  assert.deepEqual({ x: menus[3].point.x, y: menus[3].point.y }, { x: 5, y: 21 });
+
+  // Commit rows: no nested buttons — span chips still expose the ref menu.
+  const row = collectElements(RefChips({ chips, t: (key) => key, buttons: false, onRefMenu: (chip, point) => menus.push({ label: chip.label, point }) }));
+  assert.equal(row.filter((element) => element.type === "button").length, 0, "rows never nest buttons");
+  const spans = row.filter((element) => element.type === "span" && typeof element.props.className === "string" && element.props.className.startsWith("dgg-chip "));
+  assert.equal(spans.length, 4);
+  const tagSpan = spans.find((element) => element.children.join("") === "v1.0");
+  tagSpan.props.onContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 7, clientY: 8 });
+  assert.deepEqual({ x: menus.at(-1).point.x, y: menus.at(-1).point.y }, { x: 7, y: 8 });
+  // Row chips are keyboard reachable too: Shift+F10/Enter open the same menu.
+  assert.equal(tagSpan.props.role, "button");
+  assert.equal(tagSpan.props.tabIndex, 0);
+  assert.equal(tagSpan.props["aria-haspopup"], "menu");
+  tagSpan.props.onKeyDown({ key: "F10", shiftKey: true, preventDefault() {}, stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 2, top: 4, bottom: 16 }) } });
+  assert.deepEqual({ x: menus.at(-1).point.x, y: menus.at(-1).point.y }, { x: 2, y: 16 });
+  tagSpan.props.onKeyDown({ key: "Enter", preventDefault() {}, stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 3, top: 5, bottom: 17 }) } });
+  assert.equal(menus.at(-1).label, "v1.0");
+  const headSpan = spans.find((element) => element.children.join("") === "HEAD");
+  assert.equal(headSpan.props.onContextMenu, undefined, "the HEAD badge has no menu");
+  assert.equal(headSpan.props.onKeyDown, undefined);
+  assert.equal(headSpan.props.tabIndex, undefined);
+});
+
+test("ActionDialog rename uses two text fields and submits both names", () => {
+  const { ActionDialog, actionArguments } = loadInternals();
+  const confirmed = [];
+  const tree = ActionDialog({
+    t: (key) => key,
+    dialog: { kind: "renameBranch", needs: "rename", requestedRef: "old-name", options: [], destructive: false, dirtySensitive: false, hash: "" },
+    dirty: 0,
+    running: false,
+    onCancel: () => {},
+    onConfirm: (...args) => confirmed.push(args),
+  });
+  const elements = collectElements(tree);
+  const inputs = elements.filter((element) => element.type === "input");
+  assert.equal(inputs.length, 2, "rename needs exactly two text fields");
+  assert.deepEqual(inputs.map((input) => input.props["aria-label"]), ["action.oldBranchName", "action.newBranchName"]);
+  assert.equal(inputs[0].props.value, "old-name", "the current name is prefilled");
+  assert.equal(inputs[1].props.value, "");
+  assert.equal(elements.filter((element) => element.type === "select").length, 0);
+  // Until a different new name is typed the confirmation is unavailable.
+  const run = elements.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(run.props.disabled, true);
+  run.props.onClick();
+  assert.deepEqual(confirmed, [["old-name", "", ""]]);
+  // The submitted body is the host's `{ name, newName }`.
+  assert.deepEqual(plain(actionArguments("renameBranch", { name: "old-name", newName: "new-name" })), { name: "old-name", newName: "new-name" });
+});
+
+// ── TODO-9: find control ────────────────────────────────────────────────────
+
+test("filterCommits matches subject, author, hashes and ref labels", () => {
+  const { filterCommits } = loadInternals();
+  const commits = [
+    { hash: "aaaa1111", abbrev: "aaaa111", subject: "Add parser", authorName: "Alice", authorEmail: "alice@x", refs: ["HEAD", "main"] },
+    { hash: "bbbb2222", abbrev: "bbbb222", subject: "Fix crash", authorName: "Bob", authorEmail: "bob@x", refs: ["dev"] },
+    { hash: "cccc3333", abbrev: "cccc333", subject: "Release notes", authorName: "Carol", authorEmail: "carol@x", refs: ["tag: v2.0"] },
+  ];
+  const shape = (result) => ({ matches: result.matches, indices: Array.from(result.indices) });
+  assert.deepEqual(shape(filterCommits(commits, "PARSER")), { matches: 1, indices: [0] }, "subject, case-insensitive");
+  assert.deepEqual(shape(filterCommits(commits, "bob")), { matches: 1, indices: [1] }, "author name");
+  assert.deepEqual(shape(filterCommits(commits, "cccc")), { matches: 1, indices: [2] }, "short hash prefix");
+  assert.deepEqual(shape(filterCommits(commits, "cccc3333")), { matches: 1, indices: [2] }, "full hash");
+  assert.deepEqual(shape(filterCommits(commits, "v2.0")), { matches: 1, indices: [2] }, "tag ref label");
+  assert.deepEqual(shape(filterCommits(commits, "main")), { matches: 1, indices: [0] }, "branch ref label");
+  assert.deepEqual(shape(filterCommits(commits, "zzz")), { matches: 0, indices: [] });
+  // Empty/whitespace restores the whole page.
+  assert.deepEqual(shape(filterCommits(commits, "")), { matches: 3, indices: [0, 1, 2] });
+  assert.deepEqual(shape(filterCommits(commits, "   ")), { matches: 3, indices: [0, 1, 2] });
+  assert.deepEqual(shape(filterCommits(null, "x")), { matches: 0, indices: [] });
+});
+
+test("nextMatch wraps in both directions", () => {
+  const { nextMatch } = loadInternals();
+  assert.equal(nextMatch(0, 3, 1), 1);
+  assert.equal(nextMatch(2, 3, 1), 0, "next wraps");
+  assert.equal(nextMatch(0, 3, -1), 2, "previous wraps");
+  assert.equal(nextMatch(1, 3, -1), 0);
+  assert.equal(nextMatch(-1, 3, 1), 0);
+  assert.equal(nextMatch(-1, 3, -1), 2);
+  assert.equal(nextMatch(9, 3, 1), 0);
+  assert.equal(nextMatch(0, 0, 1), -1);
+  assert.equal(nextMatch(0, Number.NaN, 1), -1);
+});
+
+test("FindBar shows the counter and handles Enter, Shift+Enter and Escape", () => {
+  const { FindBar } = loadInternals();
+  const calls = { query: [], next: 0, prev: 0, close: 0 };
+  const tree = FindBar({
+    t: (key) => key,
+    query: "abc",
+    total: 3,
+    activeIndex: 1,
+    onQuery: (value) => calls.query.push(value),
+    onNext: () => { calls.next += 1; },
+    onPrev: () => { calls.prev += 1; },
+    onClose: () => { calls.close += 1; },
+  });
+  const elements = collectElements(tree);
+  const input = elements.find((element) => element.type === "input");
+  assert.equal(input.props.value, "abc");
+  assert.equal(input.props.placeholder, "find.placeholder");
+  assert.equal(input.props["aria-label"], "find.label");
+  input.props.onChange({ target: { value: "abcd" } });
+  assert.deepEqual(calls.query, ["abcd"]);
+  input.props.onKeyDown({ key: "Enter", preventDefault() {} });
+  assert.equal(calls.next, 1);
+  input.props.onKeyDown({ key: "Enter", shiftKey: true, preventDefault() {} });
+  assert.equal(calls.prev, 1);
+  input.props.onKeyDown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+  assert.equal(calls.close, 1);
+  const counter = elements.find((element) => element.props.className === "dgg-find-count");
+  assert.equal(counter.children.join(""), "2/3");
+  assert.equal(counter.props["aria-label"], "find.counter");
+  const buttons = elements.filter((element) => element.type === "button");
+  assert.deepEqual(buttons.map((button) => button.props["aria-label"]), ["find.prev", "find.next", "find.close"]);
+  buttons[1].props.onClick();
+  assert.equal(calls.next, 2);
+
+  // With nothing to move through, the arrows are disabled and the counter is 0/0.
+  const idle = collectElements(FindBar({ t: (key) => key, query: "", total: 0, activeIndex: -1, onQuery() {}, onNext() {}, onPrev() {}, onClose() {} }));
+  assert.equal(idle.find((element) => element.props.className === "dgg-find-count").children.join(""), "0/0");
+  assert.equal(idle.filter((element) => element.type === "button" && element.props.disabled === true).length, 2);
+});
+
+// ── TODO-10: branch filter ──────────────────────────────────────────────────
+
+test("branchFilterOptions lists local branches with defaults", () => {
+  const { branchFilterOptions } = loadInternals();
+  const options = branchFilterOptions([
+    { name: "refs/heads/main", shortName: "main", type: "branch", head: true },
+    { name: "refs/heads/dev", shortName: "dev", type: "branch", head: false },
+    { name: "refs/remotes/origin/main", shortName: "origin/main", type: "remote" },
+    { name: "refs/tags/v1", shortName: "v1", type: "tag" },
+  ]);
+  assert.deepEqual(plain(options), [
+    { name: "main", isHead: true, selectedByDefault: true },
+    { name: "dev", isHead: false, selectedByDefault: true },
+  ]);
+  assert.deepEqual(Array.from(branchFilterOptions(null)), []);
+});
+
+test("branchRequestValue omits the field for all or none and sends a subset", () => {
+  const { branchRequestValue } = loadInternals();
+  const options = branchFilterOptionsOf(["main", "dev", "topic"]);
+  assert.equal(branchRequestValue(null, options), null, "the implicit all-selection sends nothing");
+  assert.equal(branchRequestValue([], options), null, "clearing the filter sends nothing");
+  assert.equal(branchRequestValue(["main", "dev", "topic"], options), null, "every branch selected sends nothing");
+  assert.deepEqual(Array.from(branchRequestValue(["topic", "main"], options)), ["main", "topic"], "options order, not click order");
+  assert.equal(branchRequestValue(["ghost"], options), null, "unknown names fall back to no filter");
+});
+
+/** Branch options helper: names in, filter options out. */
+function branchFilterOptionsOf(names) {
+  const { branchFilterOptions } = loadInternals();
+  return branchFilterOptions(names.map((name) => ({ name: "refs/heads/" + name, shortName: name, type: "branch" })));
+}
+
+test("toggleBranchSelection toggles from the implicit all selection", () => {
+  const { toggleBranchSelection } = loadInternals();
+  const options = branchFilterOptionsOf(["main", "dev", "topic"]);
+  assert.deepEqual(Array.from(toggleBranchSelection(null, "dev", options)), ["main", "topic"], "unchecking from all");
+  assert.deepEqual(Array.from(toggleBranchSelection(["main", "topic"], "dev", options)), ["main", "dev", "topic"], "re-checking");
+  assert.deepEqual(Array.from(toggleBranchSelection(["main", "dev", "topic"], "topic", options)), ["main", "dev"]);
+  assert.deepEqual(Array.from(toggleBranchSelection(["ghost"], "main", options)), ["main"]);
+});
+
+test("BranchFilterBar renders checkbox options and the all reset", () => {
+  const { BranchFilterBar } = loadInternals();
+  const toggled = [];
+  const resets = [];
+  let closed = 0;
+  const options = [
+    { name: "main", isHead: true, selectedByDefault: true },
+    { name: "dev", isHead: false, selectedByDefault: true },
+  ];
+  const all = collectElements(
+    BranchFilterBar({ t: (key) => key, options, selection: null, onToggle: (name) => toggled.push(name), onReset: () => resets.push(true), onClose: () => { closed += 1; } }),
+  );
+  const boxes = all.filter((element) => element.type === "input");
+  assert.equal(boxes.length, 2);
+  assert.deepEqual(boxes.map((box) => box.props.checked), [true, true], "default is every branch");
+  boxes[1].props.onChange();
+  assert.deepEqual(toggled, ["dev"]);
+  const allButton = all.find((element) => element.type === "button" && element.children.join("") === "filter.all");
+  allButton.props.onClick();
+  assert.equal(resets.length, 1);
+  const closeButton = all.find((element) => element.type === "button" && element.props["aria-label"] === "filter.close");
+  closeButton.props.onClick();
+  assert.equal(closed, 1);
+  assert.ok(all.some((element) => element.children.join("") === "filter.current"), "the HEAD branch is badged");
+
+  const subset = collectElements(BranchFilterBar({ t: (key) => key, options, selection: ["dev"], onToggle() {}, onReset() {}, onClose() {} }));
+  assert.deepEqual(subset.filter((element) => element.type === "input").map((box) => box.props.checked), [false, true]);
+
+  const empty = collectElements(BranchFilterBar({ t: (key) => key, options: [], selection: null, onToggle() {}, onReset() {}, onClose() {} }));
+  assert.ok(empty.some((element) => element.children.join("") === "filter.empty"));
+});
+
+// ── TODO-11: sort order and the graph request ──���────────────────────────────
+
+test("graphRequest keeps the default body byte-identical", () => {
+  const { graphRequest } = loadInternals();
+  const today = JSON.stringify({ sessionId: "session-1", limit: 120 });
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "session-1", limit: 120 })), today);
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "session-1", limit: 120, branches: null, order: "date" })), today);
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "session-1", limit: 120, branches: [], order: "date" })), today);
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "session-1", limit: 120, order: "bogus" })), today, "unknown orders fall back to date");
+  // Only an explicit, non-default choice adds a key.
+  assert.deepEqual(plain(graphRequest({ sessionId: "s", limit: 50, branches: ["main"], order: "topo" })), {
+    sessionId: "s",
+    limit: 50,
+    branches: ["main"],
+    order: "topo",
+  });
+  assert.deepEqual(plain(graphRequest({ sessionId: "s", limit: 50, order: "author-date" })), { sessionId: "s", limit: 50, order: "author-date" });
+  assert.deepEqual(Array.from(COMMIT_ORDER_VALUES()), ["date", "author-date", "topo"]);
+});
+
+/** The order select's option values, in display order. */
+function COMMIT_ORDER_VALUES() {
+  const { COMMIT_ORDER_OPTIONS } = loadInternals();
+  return COMMIT_ORDER_OPTIONS.map((option) => option.value);
+}
+
+test("Toolbar exposes find, filter and the order select", () => {
+  const { Toolbar } = loadInternals();
+  const calls = { find: 0, filter: 0, order: [], refresh: 0, menu: 0 };
+  const props = {
+    t: (key) => key,
+    repoLabel: "repo",
+    repoPath: "/tmp/repo",
+    branchLabel: "main",
+    dirty: 0,
+    busy: false,
+    backVisible: false,
+    menuOpen: false,
+    running: false,
+    order: "date",
+    findOpen: true,
+    filterOpen: false,
+    onRefresh: () => { calls.refresh += 1; },
+    onToggleFind: () => { calls.find += 1; },
+    onToggleFilter: () => { calls.filter += 1; },
+    onOrderChange: (value) => calls.order.push(value),
+    onToggleMenu: () => { calls.menu += 1; },
+    onCloseMenu: () => {},
+    onFetch: () => {},
+    onBack: () => {},
+  };
+  const elements = collectElements(Toolbar(props));
+  const find = elements.find((element) => element.props["aria-label"] === "find.label");
+  assert.equal(find.props["aria-pressed"], true, "the active find control is pressed");
+  find.props.onClick();
+  assert.equal(calls.find, 1);
+  const filter = elements.find((element) => element.props["aria-label"] === "filter.label");
+  assert.equal(filter.props["aria-pressed"], false);
+  filter.props.onClick();
+  assert.equal(calls.filter, 1);
+  assert.equal(elements.filter((element) => element.type === "select").length, 0, "the order select lives in the overflow menu");
+
+  const open = collectElements(Toolbar({ ...props, menuOpen: true }));
+  const select = open.find((element) => element.type === "select");
+  assert.ok(select, "the overflow menu holds the order select");
+  assert.equal(select.props.value, "date");
+  assert.deepEqual(select.children.flat().map((option) => option.props.value), ["date", "author-date", "topo"]);
+  select.props.onChange({ target: { value: "topo" } });
+  assert.deepEqual(calls.order, ["topo"]);
+});
+
+test("CommitList renders only filtered indices and marks the active match", () => {
+  const { CommitList, layoutGraph } = loadInternals();
+  const commits = [
+    { hash: "a1", abbrev: "a1", subject: "One", parents: [] },
+    { hash: "b1", abbrev: "b1", subject: "Two", parents: ["a1"] },
+    { hash: "c1", abbrev: "c1", subject: "Three", parents: ["b1"] },
+  ];
+  const value = { commits, refs: [] };
+  const layout = layoutGraph(commits);
+  const tree = CommitList({
+    t: (key) => key,
+    value,
+    layout,
+    refIndex: new Map(),
+    uncommitted: null,
+    selectedHash: "",
+    indices: [2],
+    activeHash: "c1",
+    onSelect() {},
+    onMenu() {},
+    onRefMenu() {},
+    onLoadMore() {},
+    canLoadMore: false,
+    loadingMore: false,
+  });
+  const elements = collectElements(tree);
+  const rows = elements.filter((element) => typeof element.type === "function" && element.type.name === "CommitRow");
+  assert.equal(rows.length, 1, "only the matching commit is rendered");
+  assert.equal(rows[0].props.commit.hash, "c1");
+  assert.equal(rows[0].props.active, true);
+  assert.ok(rows[0].props.rowRef !== null && typeof rows[0].props.rowRef === "object", "the active row carries the scroll ref");
+  assert.equal(typeof rows[0].props.onRefMenu, "function", "row chips receive the ref menu handler");
+  // The lane layout still comes from the whole page: rendering row 2 of 3 keeps
+  // its own layout row rather than re-laying out the filtered subset.
+  assert.equal(rows[0].props.row, layout.rows[2]);
+
+  const none = collectElements(CommitList({ t: (key) => key, value, layout, refIndex: new Map(), uncommitted: null, indices: [], activeHash: "", onSelect() {}, onMenu() {}, onRefMenu() {} }));
+  assert.equal(none.filter((element) => typeof element.type === "function" && element.type.name === "CommitRow").length, 0);
 });
