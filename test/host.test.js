@@ -26,6 +26,9 @@ const DIFF_PATH = "/api/dsh-git-graph/diff";
 const ACTION_PATH = "/api/dsh-git-graph/action";
 const UNCOMMITTED_PATH = "/api/dsh-git-graph/uncommitted";
 const COMPARE_PATH = "/api/dsh-git-graph/compare";
+const STASHES_PATH = "/api/dsh-git-graph/stashes";
+const TAG_PATH = "/api/dsh-git-graph/tag";
+const REMOTES_PATH = "/api/dsh-git-graph/remotes";
 
 /** Filesystem and git fixtures shared by the suite. */
 const fixture = {
@@ -98,6 +101,38 @@ function commitAt(cwd, seconds, message) {
   const date = gitDate(seconds);
   runGit(["commit", "-q", "-m", message], cwd, { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
   return runGit(["rev-parse", "HEAD"], cwd).trim();
+}
+
+/** Create one bare remote repository under the shared temporary root. */
+function createBareRemote(name) {
+  const remotePath = path.join(fixture.root, name);
+  runGit(["init", "-q", "--bare", "-b", "main", remotePath], fixture.root);
+  return remotePath;
+}
+
+/** Clone one bare remote into the shared temporary root. */
+function cloneFromRemote(remotePath, name) {
+  const target = path.join(fixture.root, name);
+  runGit(["clone", "-q", remotePath, target], fixture.root);
+  return target;
+}
+
+/** Current HEAD hash of a repository. */
+function headOf(cwd) {
+  return runGit(["rev-parse", "HEAD"], cwd).trim();
+}
+
+/** File content as UTF-8 text. */
+function readText(filePath) {
+  return fs.readFileSync(filePath, "utf8");
+}
+
+/** Parent hashes of one revision. */
+function parentsOf(cwd, revision = "HEAD") {
+  return runGit(["log", "-1", "--format=%P", revision], cwd)
+    .trim()
+    .split(/\s+/)
+    .filter((parent) => parent.length > 0);
 }
 
 /** Build one commit message fixture repository with branches, a merge, rename, binary and a large file. */
@@ -658,8 +693,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 6);
-  assert.equal(second.routes.size, 6);
+  assert.equal(first.routes.size, 9);
+  assert.equal(second.routes.size, 9);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -678,9 +713,9 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the six POST Fetch routes", () => {
+test("apply registers exactly the nine POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
-  assert.deepEqual(routes, [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, DIFF_PATH, GRAPH_PATH, UNCOMMITTED_PATH].sort());
+  assert.deepEqual(routes, [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort());
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
     assert.equal(route.requestBody, "buffered");
@@ -695,7 +730,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 6);
+  assert.equal(noTools.routes.size, 9);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -1642,6 +1677,602 @@ test("git_graph tool shape stays untouched by graph filters and ordering", async
   assert.equal(log.action, "log");
   assert.equal(log.isRepo, true);
   assert.equal(log.commits.length, 5);
+  const branches = await tool.execute({ action: "branches" }, exec);
+  assert.equal(branches.action, "branches");
+});
+
+// ---------------------------------------------------------------------------
+// Wave 4: extended action table (merge / reset / pull / push / rebase)
+// ---------------------------------------------------------------------------
+
+test("merge and mergeCommit run the expected merge shapes", async () => {
+  const dir = createScratchRepo("merge-actions");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  const root = commitAll(dir, "root");
+  runGit(["switch", "-q", "-c", "topic"], dir);
+  writeFile(path.join(dir, "topic.txt"), "topic\n");
+  const topic = commitAll(dir, "topic commit");
+  runGit(["switch", "-q", "main"], dir);
+
+  // Default merge fast-forwards when main is the topic's base.
+  const fastForward = await api.performAction(dir, "merge", { hash: "topic" });
+  assert.equal(fastForward.message, "Merged topic.");
+  assert.equal(headOf(dir), topic);
+  runGit(["reset", "-q", "--hard", root], dir);
+
+  // Diverge main so the remaining shapes need a real merge.
+  writeFile(path.join(dir, "main.txt"), "main\n");
+  const mainCommit = commitAll(dir, "main commit");
+
+  const merged = await api.performAction(dir, "merge", { hash: "topic" });
+  assert.equal(merged.message, "Merged topic.");
+  assert.equal(parentsOf(dir).length, 2);
+  runGit(["reset", "-q", "--hard", mainCommit], dir);
+
+  // --no-ff is explicit (and still yields a merge commit).
+  const noFastForward = await api.performAction(dir, "merge", { hash: "topic", noFastForward: true });
+  assert.equal(noFastForward.message, "Merged topic.");
+  assert.equal(parentsOf(dir).length, 2);
+  runGit(["reset", "-q", "--hard", mainCommit], dir);
+
+  // mergeCommit is the alias with no extra flags.
+  const alias = await api.performAction(dir, "mergeCommit", { hash: "topic" });
+  assert.equal(alias.message, "Merged topic.");
+  assert.equal(parentsOf(dir).length, 2);
+  runGit(["reset", "-q", "--hard", mainCommit], dir);
+
+  // --no-commit stages the merge and leaves HEAD untouched.
+  const staged = await api.performAction(dir, "merge", { hash: "topic", noCommit: true });
+  assert.equal(staged.message, "Merged topic.");
+  assert.equal(headOf(dir), mainCommit);
+  assert.ok((await api.readUncommitted(dir)).staged.length > 0);
+  runGit(["merge", "--abort"], dir);
+  runGit(["reset", "-q", "--hard", mainCommit], dir);
+
+  // --squash also leaves HEAD untouched.
+  const squashed = await api.performAction(dir, "merge", { hash: "topic", squash: true });
+  assert.equal(squashed.message, "Merged topic.");
+  assert.equal(headOf(dir), mainCommit);
+  runGit(["reset", "-q", "--hard", mainCommit], dir);
+  runGit(["clean", "-qfd"], dir);
+
+  await assert.rejects(api.performAction(dir, "merge", {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "merge", { hash: "-x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "merge", { hash: "no-such-ref" }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "mergeCommit", {}), (error) => error.code === "BAD_REQUEST");
+});
+
+test("resetToCommit supports soft, mixed and hard modes", async () => {
+  for (const mode of ["soft", "mixed", "hard"]) {
+    const dir = createScratchRepo(`reset-${mode}`);
+    writeFile(path.join(dir, "a.txt"), "a\n");
+    writeFile(path.join(dir, "b.txt"), "b1\n");
+    writeFile(path.join(dir, "c.txt"), "c1\n");
+    const first = commitAll(dir, "first");
+    writeFile(path.join(dir, "b.txt"), "b2\n");
+    commitAll(dir, "second");
+    writeFile(path.join(dir, "c.txt"), "c2\n");
+    commitAll(dir, "third");
+
+    const reset = await api.performAction(dir, "resetToCommit", { hash: first, mode });
+    assert.match(reset.message, new RegExp(`Reset \\(${mode}\\)`));
+    assert.equal(headOf(dir), first);
+    const state = await api.readUncommitted(dir);
+    if (mode === "soft") {
+      assert.ok(state.counts.staged >= 2, "soft reset stages the removed commits' changes");
+      assert.equal(state.counts.unstaged, 0);
+    } else if (mode === "mixed") {
+      assert.equal(state.counts.staged, 0);
+      assert.ok(state.counts.unstaged >= 2, "mixed reset leaves the changes unstaged");
+    } else {
+      assert.deepEqual(state.counts, { staged: 0, unstaged: 0, untracked: 0 });
+    }
+  }
+
+  const dir = createScratchRepo("reset-errors");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const first = commitAll(dir, "first");
+  await assert.rejects(api.performAction(dir, "resetToCommit", { hash: first, mode: "merge" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetToCommit", { hash: first }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetToCommit", { mode: "hard" }), (error) => error.code === "BAD_REQUEST");
+});
+
+test("pullBranch fast-forwards, merges and rebases from a local bare remote", async () => {
+  const source = createScratchRepo("pull-source");
+  writeFile(path.join(source, "a.txt"), "a\n");
+  commitAll(source, "A");
+  const bare = createBareRemote("pull-remote.git");
+  runGit(["remote", "add", "origin", bare], source);
+  runGit(["push", "-q", "-u", "origin", "main"], source);
+  const work = cloneFromRemote(bare, "pull-work");
+
+  writeFile(path.join(source, "b.txt"), "b\n");
+  const sourceB = commitAll(source, "B");
+  runGit(["push", "-q"], source);
+  const fastForwarded = await api.performAction(work, "pullBranch", { remote: "origin", branch: "main" });
+  assert.equal(fastForwarded.message, "Pulled origin main.");
+  assert.equal(headOf(work), sourceB);
+
+  writeFile(path.join(source, "s.txt"), "s\n");
+  commitAll(source, "S");
+  runGit(["push", "-q"], source);
+  writeFile(path.join(work, "w.txt"), "w\n");
+  commitAll(work, "W");
+  const merged = await api.performAction(work, "pullBranch", { remote: "origin", branch: "main", noFastForward: true });
+  assert.equal(merged.message, "Pulled origin main.");
+  assert.equal(parentsOf(work).length, 2);
+
+  const rebaseWork = cloneFromRemote(bare, "pull-work-rebase");
+  writeFile(path.join(source, "s2.txt"), "s2\n");
+  commitAll(source, "S2");
+  runGit(["push", "-q"], source);
+  writeFile(path.join(rebaseWork, "w2.txt"), "w2\n");
+  commitAll(rebaseWork, "W2");
+  const rebased = await api.performAction(rebaseWork, "pullBranch", { remote: "origin", branch: "main", rebase: true });
+  assert.equal(rebased.message, "Pulled origin main.");
+  assert.equal(parentsOf(rebaseWork).length, 1, "rebase keeps linear history");
+  assert.match(runGit(["log", "--format=%s", "-2"], rebaseWork), /^W2[\s\S]*S2/m);
+
+  await assert.rejects(
+    api.performAction(work, "pullBranch", { remote: "origin", branch: "main", rebase: true, noFastForward: true }),
+    (error) => error.code === "BAD_REQUEST",
+  );
+  await assert.rejects(api.performAction(work, "pullBranch", { branch: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "pullBranch", { remote: "-x", branch: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "pullBranch", { remote: "no-such-remote", branch: "main" }), (error) => error.code === "GIT_FAILED");
+});
+
+test("pushBranch pushes, sets upstream and only forces with a lease", async () => {
+  const source = createScratchRepo("push-source");
+  writeFile(path.join(source, "a.txt"), "a\n");
+  commitAll(source, "A");
+  const bare = createBareRemote("push-remote.git");
+  runGit(["remote", "add", "origin", bare], source);
+  runGit(["push", "-q", "-u", "origin", "main"], source);
+  const work = cloneFromRemote(bare, "push-work");
+
+  writeFile(path.join(work, "b.txt"), "b\n");
+  commitAll(work, "B");
+  const pushed = await api.performAction(work, "pushBranch", { remote: "origin", branch: "main" });
+  assert.equal(pushed.message, "Pushed origin main.");
+  assert.equal(runGit(["rev-parse", "main"], bare).trim(), headOf(work));
+
+  runGit(["switch", "-q", "-c", "feature"], work);
+  writeFile(path.join(work, "f.txt"), "f\n");
+  commitAll(work, "F");
+  const upstream = await api.performAction(work, "pushBranch", { remote: "origin", branch: "feature", setUpstream: true });
+  assert.equal(upstream.message, "Pushed origin feature.");
+  assert.equal(runGit(["rev-parse", "--abbrev-ref", "feature@{upstream}"], work).trim(), "origin/feature");
+
+  // force means --force-with-lease: amend a pushed commit while the remote is unchanged.
+  runGit(["switch", "-q", "main"], work);
+  runGit(["commit", "--amend", "-q", "-m", "B amended"], work);
+  const amended = headOf(work);
+  const forced = await api.performAction(work, "pushBranch", { remote: "origin", branch: "main", force: true });
+  assert.equal(forced.message, "Pushed origin main.");
+  assert.equal(runGit(["rev-parse", "main"], bare).trim(), amended);
+
+  // A stale lease (remote moved without a fetch) is refused by git.
+  runGit(["fetch", "-q", "origin"], source);
+  runGit(["reset", "-q", "--hard", "origin/main"], source);
+  writeFile(path.join(source, "s.txt"), "s\n");
+  commitAll(source, "S");
+  runGit(["push", "-q", "origin", "main"], source);
+  writeFile(path.join(work, "c.txt"), "c\n");
+  commitAll(work, "C");
+  await assert.rejects(api.performAction(work, "pushBranch", { remote: "origin", branch: "main", force: true }), (error) => error.code === "GIT_FAILED");
+
+  await assert.rejects(api.performAction(work, "pushBranch", { branch: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "pushBranch", { remote: "-x", branch: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(work, "pushBranch", { remote: "no-such-remote", branch: "main" }), (error) => error.code === "GIT_FAILED");
+});
+
+test("rebase rebases the current branch onto the given ref", async () => {
+  const dir = createScratchRepo("rebase-action");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "f.txt"), "f\n");
+  commitAll(dir, "F");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "m.txt"), "m\n");
+  commitAll(dir, "M");
+  runGit(["switch", "-q", "feature"], dir);
+
+  const rebased = await api.performAction(dir, "rebase", { onto: "main" });
+  assert.equal(rebased.message, "Rebased onto main.");
+  assert.deepEqual(runGit(["log", "--format=%s", "-3"], dir).trim().split("\n"), ["F", "M", "A"]);
+
+  await assert.rejects(api.performAction(dir, "rebase", {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "rebase", { onto: "-x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "rebase", { onto: "no-such-ref" }), (error) => error.code === "GIT_FAILED");
+});
+
+test("dropCommit refuses HEAD/foreign children and drops a middle commit", async () => {
+  const dir = createScratchRepo("drop-commit");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  writeFile(path.join(dir, "b.txt"), "b\n");
+  const b = commitAll(dir, "B");
+  writeFile(path.join(dir, "c.txt"), "c\n");
+  commitAll(dir, "C");
+  writeFile(path.join(dir, "d.txt"), "d\n");
+  commitAll(dir, "D");
+
+  // A child reachable from another ref (not rewritten by this rebase) is refused.
+  runGit(["branch", "other", b], dir);
+  runGit(["switch", "-q", "other"], dir);
+  writeFile(path.join(dir, "e.txt"), "e\n");
+  commitAll(dir, "E");
+  runGit(["switch", "-q", "main"], dir);
+  await assert.rejects(
+    api.performAction(dir, "dropCommit", { hash: b }),
+    (error) => error.code === "BAD_REQUEST" && /children/.test(error.message),
+  );
+
+  // Without the other ref the middle commit is droppable.
+  runGit(["branch", "-D", "other"], dir);
+  const dropped = await api.performAction(dir, "dropCommit", { hash: b });
+  assert.match(dropped.message, /Dropped commit/);
+  assert.deepEqual(runGit(["log", "--format=%s"], dir).trim().split("\n").sort(), ["A", "C", "D"]);
+  assert.equal(runGit(["rev-list", "HEAD"], dir).includes(b), false);
+
+  const current = headOf(dir);
+  await assert.rejects(api.performAction(dir, "dropCommit", { hash: current }), (error) => error.code === "BAD_REQUEST" && /HEAD/.test(error.message));
+  await assert.rejects(api.performAction(dir, "dropCommit", { hash: "deadbeef".repeat(5) }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "dropCommit", {}), (error) => error.code === "BAD_REQUEST");
+});
+
+test("pushTag pushes a tag to a remote", async () => {
+  const dir = createScratchRepo("push-tag");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  const bare = createBareRemote("tag-remote.git");
+  runGit(["remote", "add", "origin", bare], dir);
+  runGit(["tag", "v1"], dir);
+
+  const pushed = await api.performAction(dir, "pushTag", { name: "v1", remote: "origin" });
+  assert.equal(pushed.message, 'Pushed tag "v1" to "origin".');
+  assert.match(runGit(["ls-remote", "--tags", bare], fixture.root), /refs\/tags\/v1$/m);
+
+  await assert.rejects(api.performAction(dir, "pushTag", {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "pushTag", { name: "-x", remote: "origin" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "pushTag", { name: "no-such-tag", remote: "origin" }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "pushTag", { name: "v1", remote: "no-such-remote" }), (error) => error.code === "GIT_FAILED");
+});
+
+test("stash actions run the full create/apply/pop/drop/branch sequence", async () => {
+  const dir = createScratchRepo("stash-actions");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "two\n");
+  writeFile(path.join(dir, "untracked.txt"), "u\n");
+
+  const created = await api.performAction(dir, "stashPush", { includeUntracked: true, message: "wip one" });
+  assert.match(created.message, /Stashed changes including untracked files/);
+  const listed = await api.readStashes(dir);
+  assert.equal(listed.isRepo, true);
+  assert.equal(listed.stashes.length, 1);
+  assert.deepEqual(Object.keys(listed.stashes[0]).sort(), ["author", "hash", "index", "message", "time"]);
+  assert.equal(listed.stashes[0].index, 0);
+  assert.match(listed.stashes[0].hash, /^[0-9a-f]{40}$/);
+  assert.match(listed.stashes[0].message, /wip one/);
+  assert.equal(typeof listed.stashes[0].author, "string");
+  assert.equal(Number.isSafeInteger(listed.stashes[0].time), true);
+  assert.deepEqual((await api.readUncommitted(dir)).counts, { staged: 0, unstaged: 0, untracked: 0 });
+
+  const applied = await api.performAction(dir, "stashApply", { index: 0 });
+  assert.equal(applied.message, "Applied stash@{0}.");
+  assert.equal(readText(path.join(dir, "tracked.txt")), "two\n");
+  assert.equal(fs.existsSync(path.join(dir, "untracked.txt")), true);
+  assert.equal((await api.readStashes(dir)).stashes.length, 1, "apply keeps the stash");
+
+  runGit(["reset", "-q", "--hard"], dir);
+  runGit(["clean", "-qfd"], dir);
+  const popped = await api.performAction(dir, "stashPop", { index: 0 });
+  assert.equal(popped.message, "Popped stash@{0}.");
+  assert.equal((await api.readStashes(dir)).stashes.length, 0);
+  assert.equal(readText(path.join(dir, "tracked.txt")), "two\n");
+
+  // --index restores the staged state as well.
+  runGit(["reset", "-q", "--hard"], dir);
+  runGit(["clean", "-qfd"], dir);
+  writeFile(path.join(dir, "tracked.txt"), "three\n");
+  runGit(["add", "tracked.txt"], dir);
+  await api.performAction(dir, "stashPush", { message: "indexed" });
+  const reinstated = await api.performAction(dir, "stashApply", { index: 0, reinstateIndex: true });
+  assert.equal(reinstated.message, "Applied stash@{0}.");
+  assert.ok((await api.readUncommitted(dir)).counts.staged > 0);
+  runGit(["reset", "-q", "--hard"], dir);
+  await api.performAction(dir, "stashDrop", { index: 0 });
+  assert.equal((await api.readStashes(dir)).stashes.length, 0);
+
+  writeFile(path.join(dir, "tracked.txt"), "four\n");
+  await api.performAction(dir, "stashPush", {});
+  const dropped = await api.performAction(dir, "stashDrop", { index: 0 });
+  assert.equal(dropped.message, "Dropped stash@{0}.");
+  assert.equal((await api.readStashes(dir)).stashes.length, 0);
+
+  // git stash branch checks the new branch out and drops the stash.
+  writeFile(path.join(dir, "tracked.txt"), "five\n");
+  await api.performAction(dir, "stashPush", {});
+  const branched = await api.performAction(dir, "branchFromStash", { index: 0, name: "from-stash" });
+  assert.equal(branched.message, 'Created branch "from-stash" from stash@{0}.');
+  assert.equal((await api.readStashes(dir)).stashes.length, 0);
+  assert.equal(runGit(["rev-parse", "--abbrev-ref", "HEAD"], dir).trim(), "from-stash");
+  runGit(["switch", "-q", "main"], dir);
+
+  writeFile(path.join(dir, "tracked.txt"), "six\n");
+  const aliasStash = await api.performAction(dir, "stashUncommitted", { includeUntracked: true });
+  assert.match(aliasStash.message, /Stashed changes/);
+  assert.equal((await api.readStashes(dir)).stashes.length, 1);
+
+  await assert.rejects(api.performAction(dir, "stashApply", { index: "0" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "stashPop", { index: -1 }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "stashDrop", { index: 99 }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "branchFromStash", { index: 0 }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "stashPush", { message: "bad\nmessage" }), (error) => error.code === "BAD_REQUEST");
+});
+
+test("cleanUntracked defaults to a dry run and removes untracked files only when real", async () => {
+  const dir = createScratchRepo("clean-untracked");
+  writeFile(path.join(dir, "tracked.txt"), "t\n");
+  commitAll(dir, "base");
+  writeFile(path.join(dir, "loose.txt"), "l\n");
+  fs.mkdirSync(path.join(dir, "dir"));
+  writeFile(path.join(dir, "dir", "deep.txt"), "d\n");
+
+  const dry = await api.performAction(dir, "cleanUntracked", { dryRun: true });
+  assert.match(dry.message, /Dry run/);
+  assert.match(dry.output, /Would remove/);
+  assert.equal(fs.existsSync(path.join(dir, "loose.txt")), true);
+  assert.equal(fs.existsSync(path.join(dir, "dir", "deep.txt")), true);
+
+  const defaultDry = await api.performAction(dir, "cleanUntracked", {});
+  assert.match(defaultDry.message, /Dry run/);
+  assert.equal(fs.existsSync(path.join(dir, "loose.txt")), true);
+
+  const real = await api.performAction(dir, "cleanUntracked", { dryRun: false });
+  assert.match(real.message, /Removed 2 untracked path/);
+  assert.match(real.output, /Removing/);
+  assert.equal(fs.existsSync(path.join(dir, "loose.txt")), false);
+  assert.equal(fs.existsSync(path.join(dir, "dir")), false);
+});
+
+test("resetUncommitted supports mixed and hard only", async () => {
+  const dir = createScratchRepo("reset-uncommitted");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  commitAll(dir, "base");
+
+  writeFile(path.join(dir, "tracked.txt"), "two\n");
+  runGit(["add", "tracked.txt"], dir);
+  const mixed = await api.performAction(dir, "resetUncommitted", { mode: "mixed" });
+  assert.match(mixed.message, /Reset uncommitted changes \(mixed\)/);
+  const mixedState = await api.readUncommitted(dir);
+  assert.equal(mixedState.counts.staged, 0);
+  assert.equal(mixedState.counts.unstaged, 1);
+
+  runGit(["add", "tracked.txt"], dir);
+  writeFile(path.join(dir, "tracked.txt"), "three\n");
+  const hard = await api.performAction(dir, "resetUncommitted", { mode: "hard" });
+  assert.match(hard.message, /Reset uncommitted changes \(hard\); 0 path/);
+  assert.deepEqual((await api.readUncommitted(dir)).counts, { staged: 0, unstaged: 0, untracked: 0 });
+
+  await assert.rejects(api.performAction(dir, "resetUncommitted", { mode: "soft" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetUncommitted", {}), (error) => error.code === "BAD_REQUEST");
+});
+
+test("resetFileToRevision restores one file from a revision", async () => {
+  const dir = createScratchRepo("reset-file");
+  writeFile(path.join(dir, "file.txt"), "one\n");
+  const first = commitAll(dir, "first");
+  writeFile(path.join(dir, "file.txt"), "two\n");
+  commitAll(dir, "second");
+  writeFile(path.join(dir, "file.txt"), "three\n");
+
+  const restored = await api.performAction(dir, "resetFileToRevision", { path: "file.txt", hash: first });
+  assert.match(restored.message, /Restored "file\.txt" from /);
+  assert.equal(readText(path.join(dir, "file.txt")), "one\n");
+  assert.equal((await api.readUncommitted(dir)).counts.staged, 1, "checkout from a revision stages the restored content");
+
+  await assert.rejects(api.performAction(dir, "resetFileToRevision", { hash: first }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetFileToRevision", { path: "-x", hash: first }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetFileToRevision", { path: "file.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "resetFileToRevision", { path: "file.txt", hash: "deadbeef".repeat(5) }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "resetFileToRevision", { path: "missing.txt", hash: first }), (error) => error.code === "GIT_FAILED");
+});
+
+test("addRemote/editRemote/pruneRemote/deleteRemote manage remotes", async () => {
+  const dir = createScratchRepo("remotes-actions");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  const bareA = createBareRemote("remote-a.git");
+  const bareB = createBareRemote("remote-b.git");
+
+  const added = await api.performAction(dir, "addRemote", { name: "upstream", url: bareA });
+  assert.equal(added.message, 'Added remote "upstream".');
+  assert.deepEqual((await api.readRemotes(dir)).remotes, [{ name: "upstream", fetchUrl: bareA, pushUrl: bareA }]);
+
+  await assert.rejects(api.performAction(dir, "addRemote", { name: "upstream", url: bareB }), (error) => error.code === "GIT_FAILED");
+
+  const edited = await api.performAction(dir, "editRemote", { name: "upstream", url: bareB });
+  assert.equal(edited.message, 'Updated remote "upstream".');
+  assert.deepEqual((await api.readRemotes(dir)).remotes, [{ name: "upstream", fetchUrl: bareB, pushUrl: bareB }]);
+
+  const pruned = await api.performAction(dir, "pruneRemote", { name: "upstream" });
+  assert.equal(pruned.message, 'Pruned remote "upstream".');
+
+  const deleted = await api.performAction(dir, "deleteRemote", { name: "upstream" });
+  assert.equal(deleted.message, 'Removed remote "upstream".');
+  assert.deepEqual(await api.readRemotes(dir), { isRepo: true, remotes: [] });
+
+  await assert.rejects(api.performAction(dir, "addRemote", {}), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "addRemote", { name: "-x", url: bareA }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "addRemote", { name: "ok", url: "-x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.performAction(dir, "editRemote", { name: "nope", url: bareA }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "deleteRemote", { name: "nope" }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.performAction(dir, "pruneRemote", { name: "nope" }), (error) => error.code === "GIT_FAILED");
+  assert.equal((await api.readRemotes(fixture.empty)).isRepo, false);
+});
+
+test("action argv stays shell-free and only forces with a lease", async () => {
+  const calls = [];
+  const fakeApi = createGitApi(async (argv) => {
+    calls.push([...argv]);
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel") return { stdout: "/fake/repo\n", stderr: "", code: 0 };
+    return { stdout: "", stderr: "", code: 0 };
+  });
+
+  await fakeApi.performAction("/fake/repo", "pushBranch", { remote: "origin", branch: "main", force: true, setUpstream: true });
+  assert.deepEqual(
+    calls.find((argv) => argv[0] === "push"),
+    ["push", "-u", "--force-with-lease", "origin", "main"],
+  );
+  assert.equal(calls.some((argv) => argv.includes("--force") && !argv.includes("--force-with-lease")), false, "bare --force is never emitted");
+
+  await fakeApi.performAction("/fake/repo", "pullBranch", { remote: "origin", branch: "main", noFastForward: true });
+  assert.deepEqual(calls.filter((argv) => argv[0] === "pull").pop(), ["pull", "--no-ff", "origin", "main"]);
+  await fakeApi.performAction("/fake/repo", "pullBranch", { remote: "origin", branch: "main", rebase: true });
+  assert.deepEqual(calls.filter((argv) => argv[0] === "pull").pop(), ["pull", "--rebase", "origin", "main"]);
+
+  await fakeApi.performAction("/fake/repo", "cleanUntracked", {});
+  assert.deepEqual(calls.filter((argv) => argv[0] === "clean").pop(), ["clean", "-fd", "-n"]);
+  await fakeApi.performAction("/fake/repo", "cleanUntracked", { dryRun: false });
+  assert.deepEqual(calls.filter((argv) => argv[0] === "clean").pop(), ["clean", "-fd"]);
+
+  await fakeApi.performAction("/fake/repo", "merge", { hash: "main", noFastForward: true, noCommit: true, squash: true });
+  assert.deepEqual(calls.find((argv) => argv[0] === "merge"), ["merge", "--no-ff", "--squash", "--no-commit", "main"]);
+
+  await fakeApi.performAction("/fake/repo", "rebase", { onto: "main" });
+  assert.deepEqual(calls.filter((argv) => argv[0] === "rebase").pop(), ["rebase", "main"]);
+
+  await fakeApi.performAction("/fake/repo", "stashDrop", { index: 3 });
+  assert.deepEqual(calls.filter((argv) => argv[0] === "stash").pop(), ["stash", "drop", "stash@{3}"]);
+
+  const before = calls.length;
+  await assert.rejects(fakeApi.performAction("/fake/repo", "stashDrop", { index: "0" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.performAction("/fake/repo", "stashApply", { index: 1.5 }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.performAction("/fake/repo", "pushBranch", { branch: "main" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.performAction("/fake/repo", "resetToCommit", { hash: "main", mode: "soft-ish" }), (error) => error.code === "BAD_REQUEST");
+  assert.equal(
+    calls.slice(before).some((argv) => argv[0] === "stash" || argv[0] === "push"),
+    false,
+    "invalid arguments never spawn git",
+  );
+});
+
+test("stashes, tag and remotes routes return their contract shapes", async () => {
+  const dir = createScratchRepo("wave4-routes");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  runGit(["tag", "v-light"], dir);
+  runGit(["tag", "-a", "v-annotated", "-m", "release notes"], dir, nextDates());
+  const bare = createBareRemote("route-remote.git");
+  runGit(["remote", "add", "origin", bare], dir);
+  writeFile(path.join(dir, "a.txt"), "changed\n");
+  await api.performAction(dir, "stashPush", { message: "route stash" });
+
+  const waveHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const stashes = await post(waveHost, STASHES_PATH, {});
+    assert.equal(stashes.ok, true);
+    assert.equal(stashes.value.isRepo, true);
+    assert.equal(stashes.value.stashes.length, 1);
+    assert.deepEqual(Object.keys(stashes.value.stashes[0]).sort(), ["author", "hash", "index", "message", "time"]);
+
+    const light = await post(waveHost, TAG_PATH, { name: "v-light" });
+    assert.equal(light.ok, true);
+    assert.deepEqual(light.value, { name: "v-light", annotated: false, tagger: null, message: "A" });
+
+    const annotated = await post(waveHost, TAG_PATH, { name: "v-annotated" });
+    assert.equal(annotated.ok, true);
+    assert.equal(annotated.value.annotated, true);
+    assert.equal(annotated.value.message, "release notes");
+    assert.deepEqual(Object.keys(annotated.value.tagger).sort(), ["email", "name", "time"]);
+    assert.equal(annotated.value.tagger.name, "Graph Test");
+
+    const notTag = await post(waveHost, TAG_PATH, { name: "main" });
+    assert.equal(notTag.ok, false);
+    assert.equal(notTag.error.code, "BAD_REQUEST");
+    const missingTag = await post(waveHost, TAG_PATH, {});
+    assert.equal(missingTag.ok, false);
+    assert.equal(missingTag.error.code, "BAD_REQUEST");
+
+    const remotes = await post(waveHost, REMOTES_PATH, {});
+    assert.equal(remotes.ok, true);
+    assert.deepEqual(remotes.value, { isRepo: true, remotes: [{ name: "origin", fetchUrl: bare, pushUrl: bare }] });
+  } finally {
+    waveHost.dispose();
+  }
+
+  const outside = createHost({ config: undefined, defaultDirectory: fixture.empty });
+  try {
+    const stashes = await post(outside, STASHES_PATH, {});
+    assert.equal(stashes.ok, true);
+    assert.equal(stashes.value.isRepo, false);
+    assert.deepEqual(stashes.value.stashes, []);
+    const remotes = await post(outside, REMOTES_PATH, {});
+    assert.equal(remotes.ok, true);
+    assert.equal(remotes.value.isRepo, false);
+    const tag = await post(outside, TAG_PATH, { name: "v1" });
+    assert.equal(tag.ok, false);
+    assert.equal(tag.error.code, "NOT_A_REPO");
+  } finally {
+    outside.dispose();
+  }
+});
+
+test("graph reports stash chips when showStashes is on and omits them when off", async () => {
+  const dir = createScratchRepo("graph-stashes");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  writeFile(path.join(dir, "a.txt"), "changed\n");
+  await api.performAction(dir, "stashPush", { message: "chip stash" });
+
+  const onHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const graph = await post(onHost, GRAPH_PATH, {});
+    assert.equal(graph.ok, true);
+    assert.equal(Array.isArray(graph.value.stashes), true);
+    assert.equal(graph.value.stashes.length, 1);
+    assert.deepEqual(Object.keys(graph.value.stashes[0]).sort(), ["hash", "index", "message"]);
+    const chip = graph.value.refs.find((ref) => ref.type === "stash");
+    assert.deepEqual(chip, {
+      name: "refs/stash@{0}",
+      shortName: "stash@{0}",
+      type: "stash",
+      hash: graph.value.stashes[0].hash,
+      head: false,
+      upstream: null,
+    });
+    assert.equal(graph.value.commits.some((commit) => commit.hash === chip.hash), false, "stash commits stay out of the walk");
+    assert.equal(graph.value.commits.length, 1);
+  } finally {
+    onHost.dispose();
+  }
+
+  const offHost = createHost({ config: { showStashes: false }, defaultDirectory: dir });
+  try {
+    const graph = await post(offHost, GRAPH_PATH, {});
+    assert.equal(graph.ok, true);
+    assert.equal("stashes" in graph.value, false);
+    assert.equal(graph.value.refs.some((ref) => ref.type === "stash"), false);
+  } finally {
+    offHost.dispose();
+  }
+});
+
+test("git_graph keeps five actions and rejects wave-4 verbs", async () => {
+  const tool = host.tools[0];
+  assert.equal(tool.name, "git_graph");
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  assert.deepEqual(tool.parameters.required, ["action"]);
+  assert.equal(tool.parameters.additionalProperties, false);
+
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  await assert.rejects(tool.execute({ action: "stashPush" }, exec), /unknown git_graph action/);
+  await assert.rejects(tool.execute({ action: "pushBranch" }, exec), /unknown git_graph action/);
   const branches = await tool.execute({ action: "branches" }, exec);
   assert.equal(branches.action, "branches");
 });

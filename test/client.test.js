@@ -106,6 +106,74 @@ const CONTRACT_KEYS = [
   "order.date",
   "order.authorDate",
   "order.topo",
+  "action.merge",
+  "action.rebase",
+  "action.dropCommit",
+  "action.resetToCommit",
+  "action.pullBranch",
+  "action.pushBranch",
+  "action.pushTag",
+  "action.tagDetails",
+  "action.stashApply",
+  "action.stashPop",
+  "action.stashDrop",
+  "action.branchFromStash",
+  "action.stashUncommitted",
+  "action.stashUntracked",
+  "action.cleanUntracked",
+  "action.resetUncommitted",
+  "action.resetFileToRevision",
+  "action.addRemote",
+  "action.editRemote",
+  "action.deleteRemote",
+  "action.pruneRemote",
+  "action.mode",
+  "action.remote",
+  "action.remoteName",
+  "action.remoteUrl",
+  "action.cleanPreview",
+  "action.previewing",
+  "action.cleanNothing",
+  "action.warningForcePush",
+  "action.warningDrop",
+  "action.warningHardReset",
+  "action.warningStashDrop",
+  "action.warningClean",
+  "action.warningDiscard",
+  "action.warningRemoveRemote",
+  "check.noFastForward",
+  "check.noCommit",
+  "check.squash",
+  "check.force",
+  "check.setUpstream",
+  "check.includeUntracked",
+  "check.dryRun",
+  "check.reinstateIndex",
+  "check.rebase",
+  "mode.soft",
+  "mode.mixed",
+  "mode.hard",
+  "menu.dropHead",
+  "menu.dropHasChildren",
+  "menu.sameBranch",
+  "detail.tagger",
+  "detail.tagTime",
+  "detail.tagType",
+  "detail.tagMessage",
+  "detail.lightweight",
+  "detail.annotated",
+  "detail.tagNoMessage",
+  "remote.title",
+  "remote.empty",
+  "remote.error",
+  "remote.fetchUrl",
+  "remote.pushUrl",
+  "remote.add",
+  "remote.edit",
+  "remote.delete",
+  "remote.prune",
+  "remote.close",
+  "toolbar.remotes",
   "common.refresh",
   "common.close",
 ];
@@ -204,7 +272,9 @@ function loadInternals() {
         "uncommittedGroups, diffRequest, diffCacheKey, compareRequest, CommitMenu, CommitRow, UncommittedRow, " +
         "UncommittedView, CompareView, refMenuItems, refCopyValue, refMenuStillValid, filterCommits, nextMatch, " +
         "branchFilterOptions, branchRequestValue, toggleBranchSelection, graphRequest, COMMIT_ORDER_OPTIONS, " +
-        "ActionDialog, Toolbar, FindBar, BranchFilterBar, CommitList }",
+        "ActionDialog, Toolbar, FindBar, BranchFilterBar, CommitList, commitActionItems, refActionItems, " +
+        "insertMenuItems, stashIndex, commitHasChildren, outputLines, ACTION_CHECKS, RESET_MODES, " +
+        "TagDetails, RemotesPanel, UncommittedView, DetailView }",
     ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
@@ -1577,4 +1647,487 @@ test("CommitList renders only filtered indices and marks the active match", () =
 
   const none = collectElements(CommitList({ t: (key) => key, value, layout, refIndex: new Map(), uncommitted: null, indices: [], activeHash: "", onSelect() {}, onMenu() {}, onRefMenu() {} }));
   assert.equal(none.filter((element) => typeof element.type === "function" && element.type.name === "CommitRow").length, 0);
+});
+
+// ── wave 4: extended commit / ref menus ─────────────────────────────────────
+
+test("commitActionItems adds merge, rebase, drop and reset with drop guardrails", () => {
+  const { commitActionItems } = loadInternals();
+  const commits = [
+    { hash: "h3", parents: ["h2"] },
+    { hash: "h2", parents: ["h1"] },
+    { hash: "h1", parents: [] },
+  ];
+  const items = commitActionItems({ hash: "h2", parents: ["h1"] }, { headHash: "h3", commits });
+  assert.deepEqual(Array.from(items, (item) => item.id), ["merge", "rebase", "drop-commit", "reset-commit"]);
+  assert.deepEqual(Array.from(items, (item) => item.kind), ["merge", "rebase", "dropCommit", "resetToCommit"]);
+  assert.deepEqual(Array.from(items, (item) => item.labelKey), ["action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit"]);
+  assert.equal(items[0].after, "create-branch");
+  assert.equal(items[3].after, "drop-commit");
+  // h2 still has h3 as a child, so dropping it would rewrite reachable history.
+  const drop = items.find((item) => item.kind === "dropCommit");
+  assert.equal(drop.disabled, true);
+  assert.equal(drop.reasonKey, "menu.dropHasChildren");
+
+  const leaf = commitActionItems({ hash: "orphan", parents: [] }, { headHash: "h3", commits });
+  assert.equal(leaf.find((item) => item.kind === "dropCommit").disabled, undefined);
+  const atHead = commitActionItems({ hash: "h3", parents: ["h2"] }, { headHash: "h3", commits });
+  assert.equal(atHead.find((item) => item.kind === "dropCommit").reasonKey, "menu.dropHead");
+  const busy = commitActionItems({ hash: "orphan", parents: [] }, { headHash: "h3", commits, busy: true });
+  for (const item of busy) {
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.busy");
+  }
+});
+
+test("refActionItems adds branch operations guarded by remotes and branch", () => {
+  const { refActionItems } = loadInternals();
+  const available = { currentBranch: "main", hasRemotes: true };
+  const branch = refActionItems({ label: "dev", kind: "branch", isHead: false }, available);
+  assert.deepEqual(Array.from(branch, (item) => item.id), [
+    "merge-branch", "pull-branch", "push-branch", "rebase-branch", "reset-branch", "fetch-branch",
+  ]);
+  assert.deepEqual(Array.from(branch, (item) => item.kind), ["merge", "pullBranch", "pushBranch", "rebase", "resetToCommit", "fetchIntoBranch"]);
+  for (const item of branch) assert.equal(item.disabled, undefined);
+  assert.equal(branch[5].after, "delete-branch");
+
+  const local = refActionItems({ label: "dev", kind: "branch" }, { currentBranch: "main", hasRemotes: false });
+  for (const kind of ["pullBranch", "pushBranch", "fetchIntoBranch"]) {
+    const item = local.find((entry) => entry.kind === kind);
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.noRemotes");
+  }
+  assert.equal(local.find((entry) => entry.kind === "merge").disabled, undefined);
+  // Rebasing a branch onto itself is refused before the dialog opens.
+  const current = refActionItems({ label: "main", kind: "branch", isHead: true }, available);
+  assert.equal(current.find((entry) => entry.kind === "rebase").reasonKey, "menu.sameBranch");
+
+  const busy = refActionItems({ label: "dev", kind: "branch" }, { ...available, busy: true });
+  for (const item of busy) assert.equal(item.reasonKey, "menu.busy");
+
+  const tag = refActionItems({ label: "v1.0", kind: "tag" }, available);
+  assert.deepEqual(Array.from(tag, (item) => item.kind), ["tagDetails", "pushTag"]);
+  assert.equal(tag[0].before, "delete-tag");
+  assert.equal(tag[1].after, "tag-details");
+  assert.equal(refActionItems({ label: "v1.0", kind: "tag" }, { hasRemotes: false }).find((entry) => entry.kind === "pushTag").reasonKey, "menu.noRemotes");
+
+  const stash = refActionItems({ label: "stash@{2}", kind: "stash" }, available);
+  assert.deepEqual(Array.from(stash, (item) => item.kind), ["stashApply", "stashPop", "stashDrop", "branchFromStash"]);
+  for (const item of refActionItems({ label: "stash", kind: "stash" }, available)) {
+    assert.equal(item.disabled, true);
+    assert.equal(item.reasonKey, "menu.noRef");
+  }
+  // The remote chip menu keeps its wave-3 base items only.
+  assert.deepEqual(Array.from(refActionItems({ label: "origin/main", kind: "remote" }, available)), []);
+});
+
+test("insertMenuItems places extended actions next to their anchors", () => {
+  const { insertMenuItems } = loadInternals();
+  const base = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  const combined = insertMenuItems(base, [{ id: "x", after: "a" }, { id: "y", before: "c" }, { id: "z" }]);
+  assert.deepEqual(Array.from(combined, (item) => item.id), ["a", "x", "b", "y", "c", "z"]);
+  assert.deepEqual(Array.from(base, (item) => item.id), ["a", "b", "c"], "the base list is not mutated");
+  assert.deepEqual(Array.from(insertMenuItems(null, [{ id: "only" }]), (item) => item.id), ["only"]);
+});
+
+test("stashIndex and commitHasChildren support the stash/drop guardrails", () => {
+  const { stashIndex, commitHasChildren } = loadInternals();
+  assert.equal(stashIndex("stash@{0}"), 0);
+  assert.equal(stashIndex("stash@{12}"), 12);
+  assert.equal(stashIndex("stash"), -1);
+  assert.equal(stashIndex("stash@{}"), -1);
+  assert.equal(stashIndex("main"), -1);
+  assert.equal(stashIndex(null), -1);
+
+  const commits = [{ hash: "b", parents: ["a"] }, { hash: "a", parents: [] }];
+  assert.equal(commitHasChildren(commits, "a"), true);
+  assert.equal(commitHasChildren(commits, "b"), false);
+  assert.equal(commitHasChildren(commits, "missing"), false);
+  assert.equal(commitHasChildren(null, "a"), false);
+});
+
+// ── wave 4: declarative dialog spec + arguments ─────────────────────────────
+
+test("actionDialogSpec describes the new dialog shapes", () => {
+  const { actionDialogSpec } = loadInternals();
+  const choices = {
+    branches: [{ name: "main" }, { name: "dev" }],
+    tags: [{ name: "v1.0" }],
+    remotes: [{ name: "origin" }],
+    currentBranch: "main",
+  };
+  const merge = actionDialogSpec("merge", choices);
+  assert.equal(merge.needs, null);
+  assert.deepEqual(Array.from(merge.options, (option) => option.key), ["noFastForward", "noCommit", "squash"]);
+  assert.deepEqual(Array.from(merge.options, (option) => option.labelKey), ["check.noFastForward", "check.noCommit", "check.squash"]);
+  assert.equal(merge.destructive, false);
+  assert.equal(merge.dirtySensitive, true);
+
+  const reset = actionDialogSpec("resetToCommit", choices);
+  assert.equal(reset.needs, "hashAndMode");
+  assert.deepEqual(Array.from(reset.choices, (choice) => choice.value), ["soft", "mixed", "hard"]);
+  assert.equal(reset.destructive, true);
+  assert.equal(reset.modeWarnings.hard, "action.warningHardReset");
+
+  const resetUncommitted = actionDialogSpec("resetUncommitted", choices);
+  assert.equal(resetUncommitted.needs, "mode");
+  assert.deepEqual(Array.from(resetUncommitted.choices, (choice) => choice.value), ["mixed", "hard"]);
+
+  const pull = actionDialogSpec("pullBranch", choices);
+  assert.equal(pull.needs, "remote");
+  assert.deepEqual(Array.from(pull.options, (option) => option.name), ["origin"]);
+  assert.deepEqual(Array.from(pull.checks, (option) => option.key), ["noFastForward", "rebase"]);
+  const push = actionDialogSpec("pushBranch", choices);
+  assert.deepEqual(Array.from(push.options, (option) => option.name), ["origin"]);
+  assert.deepEqual(Array.from(push.checks, (option) => option.key), ["force", "setUpstream"]);
+  assert.equal(push.checkWarnings.force, "action.warningForcePush");
+  assert.equal(actionDialogSpec("pushTag", choices).needs, "remote");
+
+  const addRemote = actionDialogSpec("addRemote", choices);
+  assert.deepEqual(Array.from(addRemote.fields, (field) => field.key), ["name", "url"]);
+  assert.deepEqual(Array.from(addRemote.fields, (field) => field.labelKey), ["action.remoteName", "action.remoteUrl"]);
+  const rename = actionDialogSpec("renameBranch", choices);
+  assert.deepEqual(Array.from(rename.fields, (field) => field.labelKey), ["action.oldBranchName", "action.newBranchName"]);
+  assert.equal(actionDialogSpec("deleteRemote", choices).warnings[0], "action.warningRemoveRemote");
+
+  const clean = actionDialogSpec("cleanUntracked", choices);
+  assert.equal(clean.requiresPreview, true);
+  assert.equal(clean.destructive, true);
+  assert.deepEqual(Array.from(clean.options), []);
+  assert.deepEqual(Array.from(clean.checks), []);
+  assert.deepEqual(Array.from(clean.warnings), ["action.warningClean"]);
+  assert.equal(actionDialogSpec("dropCommit", choices).warnings[0], "action.warningDrop");
+});
+
+test("actionArguments builds the wave-4 request bodies", () => {
+  const { actionArguments } = loadInternals();
+  const shape = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(shape(actionArguments("merge", { hash: "h1", flags: { noFastForward: true, squash: true } })), {
+    hash: "h1",
+    noFastForward: true,
+    noCommit: false,
+    squash: true,
+  });
+  assert.deepEqual(shape(actionArguments("rebase", { hash: "main" })), { onto: "main" });
+  assert.deepEqual(shape(actionArguments("dropCommit", { hash: "h1" })), { hash: "h1" });
+  assert.deepEqual(shape(actionArguments("resetToCommit", { hash: "h1", extra: "hard" })), { hash: "h1", mode: "hard" });
+  assert.deepEqual(shape(actionArguments("resetToCommit", { hash: "h1", extra: "bogus" })), { hash: "h1", mode: "soft" });
+  assert.deepEqual(shape(actionArguments("pullBranch", { ref: "origin", branch: "dev", flags: { noFastForward: true } })), {
+    remote: "origin",
+    branch: "dev",
+    noFastForward: true,
+  });
+  assert.deepEqual(shape(actionArguments("pushBranch", { ref: "origin", branch: "dev", flags: { setUpstream: true, force: true } })), {
+    remote: "origin",
+    branch: "dev",
+    setUpstream: true,
+    force: true,
+  });
+  assert.deepEqual(shape(actionArguments("pushTag", { ref: "origin", tagName: "v1.0" })), { name: "v1.0", remote: "origin" });
+  assert.deepEqual(shape(actionArguments("stashApply", { index: 2, flags: { reinstateIndex: true } })), { index: 2, reinstateIndex: true });
+  assert.deepEqual(shape(actionArguments("stashPop", { index: 0 })), { index: 0, reinstateIndex: false });
+  assert.deepEqual(shape(actionArguments("stashDrop", { index: 1 })), { index: 1 });
+  assert.deepEqual(shape(actionArguments("branchFromStash", { index: 0, name: "recover" })), { index: 0, name: "recover" });
+  assert.deepEqual(shape(actionArguments("stashUncommitted", { flags: { includeUntracked: true } })), { includeUntracked: true });
+  // The UI previews with dryRun: true and confirms with the real clean.
+  assert.deepEqual(shape(actionArguments("cleanUntracked", { flags: { dryRun: true } })), { dryRun: true });
+  assert.deepEqual(shape(actionArguments("cleanUntracked", { flags: {} })), { dryRun: false });
+  assert.deepEqual(shape(actionArguments("resetUncommitted", { extra: "hard" })), { mode: "hard" });
+  assert.deepEqual(shape(actionArguments("resetFileToRevision", { path: "a.txt" })), { path: "a.txt", hash: "HEAD" });
+  assert.deepEqual(shape(actionArguments("addRemote", { name: "origin", extra: "https://example.com/r.git" })), {
+    name: "origin",
+    url: "https://example.com/r.git",
+  });
+  assert.deepEqual(shape(actionArguments("editRemote", { name: "origin", extra: "git@example.com:r.git" })), {
+    name: "origin",
+    url: "git@example.com:r.git",
+  });
+  assert.deepEqual(shape(actionArguments("deleteRemote", { remoteName: "origin" })), { name: "origin" });
+  assert.deepEqual(shape(actionArguments("pruneRemote", { remoteName: "origin" })), { name: "origin" });
+  assert.deepEqual(shape(actionArguments("fetch", { ref: "origin" })), { remote: "origin" });
+});
+
+// ── wave 4: the one dialog, rendered declaratively ─────────────────────────
+
+/** Build a dialog descriptor the way GitGraphBody does. */
+function dialogFor(kind, choices, extra) {
+  const { actionDialogSpec } = loadInternals();
+  return { kind, hash: "h1", requestedRef: "", preview: null, ...actionDialogSpec(kind, choices), ...extra };
+}
+
+test("ActionDialog renders checkboxes and submits the flags", () => {
+  const { ActionDialog } = loadInternals();
+  const confirmed = [];
+  const tree = ActionDialog({
+    t: (key) => key,
+    dialog: dialogFor("merge", { branches: [], tags: [], remotes: [], currentBranch: "" }),
+    dirty: 0,
+    running: false,
+    onCancel: () => {},
+    onConfirm: (...args) => confirmed.push(args),
+  });
+  const elements = collectElements(tree);
+  const boxes = elements.filter((element) => element.type === "input" && element.type === "input" && element.props.type === "checkbox");
+  assert.equal(boxes.length, 3, "merge offers its three boolean options");
+  assert.deepEqual(boxes.map((box) => box.props.checked), [false, false, false]);
+  const labels = elements.filter((element) => element.type === "span" && String(element.props.className).includes("dgg-check-label"));
+  assert.deepEqual(labels.map((label) => label.children.join("")), ["check.noFastForward", "check.noCommit", "check.squash"]);
+  const run = elements.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(run.props.disabled, false);
+  run.props.onClick();
+  assert.equal(confirmed.length, 1);
+  assert.equal(confirmed[0].length, 4, "flag dialogs pass the checkbox map as a fourth argument");
+  assert.deepEqual(plain(confirmed[0][3]), { noFastForward: false, noCommit: false, squash: false });
+});
+
+test("ActionDialog renders mode pickers and guardrail warnings", () => {
+  const { ActionDialog } = loadInternals();
+  const confirmed = [];
+  const reset = ActionDialog({
+    t: (key) => key,
+    dialog: dialogFor("resetToCommit", { branches: [], tags: [], remotes: [], currentBranch: "" }),
+    dirty: 0,
+    running: false,
+    onCancel: () => {},
+    onConfirm: (...args) => confirmed.push(args),
+  });
+  const resetElements = collectElements(reset);
+  const modeSelect = resetElements.find((element) => element.type === "select" && element.props["aria-label"] === "action.mode");
+  assert.ok(modeSelect, "the reset dialog has a mode picker");
+  assert.deepEqual(modeSelect.children.flat().map((option) => option.props.value), ["soft", "mixed", "hard"]);
+  const run = resetElements.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  run.props.onClick();
+  assert.deepEqual(plain(confirmed[0]), ["", "", "soft"]);
+
+  const drop = collectElements(
+    ActionDialog({ t: (key) => key, dialog: dialogFor("dropCommit", {}), dirty: 0, running: false, onCancel() {}, onConfirm() {} }),
+  );
+  const warning = drop.find((element) => element.type === "p" && element.props.className === "dgg-dialog-warning");
+  assert.equal(warning.children.join(""), "action.warningDrop", "dropping shows its consequences");
+});
+
+test("ActionDialog gates clean behind the dry-run preview", () => {
+  const { ActionDialog } = loadInternals();
+  const confirmed = [];
+  const base = {
+    t: (key) => key,
+    dirty: 0,
+    running: false,
+    onCancel: () => {},
+    onConfirm: (...args) => confirmed.push(args),
+  };
+  const pending = collectElements(ActionDialog({ ...base, dialog: dialogFor("cleanUntracked", {}) }));
+  const pendingRun = pending.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(pendingRun.props.disabled, true, "clean cannot run before the dry run is shown");
+  assert.ok(pending.some((element) => element.children.join("") === "action.previewing"));
+
+  const previewed = collectElements(
+    ActionDialog({ ...base, dialog: dialogFor("cleanUntracked", {}, { preview: { lines: ["build/out.js", "tmp.log"] } }) }),
+  );
+  const lines = previewed.filter((element) => element.type === "li").map((element) => element.children.join(""));
+  assert.deepEqual(lines, ["build/out.js", "tmp.log"]);
+  const readyRun = previewed.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(readyRun.props.disabled, false);
+  readyRun.props.onClick();
+  assert.deepEqual(plain(confirmed[0]), ["", "", ""]);
+
+  const empty = collectElements(ActionDialog({ ...base, dialog: dialogFor("cleanUntracked", {}, { preview: { lines: [] } }) }));
+  assert.ok(empty.some((element) => element.children.join("") === "action.cleanNothing"));
+});
+
+test("ActionDialog renders the remote url fields", () => {
+  const { ActionDialog } = loadInternals();
+  const confirmed = [];
+  const tree = ActionDialog({
+    t: (key) => key,
+    dialog: dialogFor("addRemote", {}),
+    dirty: 0,
+    running: false,
+    onCancel: () => {},
+    onConfirm: (...args) => confirmed.push(args),
+  });
+  const elements = collectElements(tree);
+  const inputs = elements.filter((element) => element.type === "input");
+  assert.deepEqual(inputs.map((input) => input.props["aria-label"]), ["action.remoteName", "action.remoteUrl"]);
+  assert.deepEqual(inputs.map((input) => input.props.value), ["", ""]);
+  const run = elements.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(run.props.disabled, true, "both fields are required");
+  run.props.onClick();
+  assert.deepEqual(plain(confirmed[0]), ["", "", ""]);
+});
+
+// ── wave 4: tag details, remotes, uncommitted actions, detail row ──────────
+
+test("TagDetails shows annotated and lightweight tags", () => {
+  const { TagDetails } = loadInternals();
+  const annotated = collectElements(
+    TagDetails({
+      t: (key) => key,
+      name: "v1.0",
+      status: "ready",
+      value: { name: "v1.0", annotated: true, tagger: { name: "Ann", email: "ann@x", time: 1700000000 }, message: "Release 1.0" },
+    }),
+  );
+  const text = annotated.map((element) => element.children.join("")).join(" | ");
+  assert.match(text, /action\.tagDetails/);
+  assert.match(text, /detail\.annotated/);
+  assert.match(text, /detail\.tagger/);
+  assert.match(text, /detail\.tagTime/);
+  assert.ok(annotated.some((element) => element.type === "pre" && element.children.join("") === "Release 1.0"));
+
+  const lightweight = collectElements(
+    TagDetails({ t: (key) => key, name: "v1.0", status: "ready", value: { name: "v1.0", annotated: false, tagger: null, message: "" } }),
+  );
+  const lightweightText = lightweight.map((element) => element.children.join("")).join(" | ");
+  assert.match(lightweightText, /detail\.lightweight/);
+  assert.match(lightweightText, /detail\.tagNoMessage/);
+
+  const loading = collectElements(TagDetails({ t: (key) => key, name: "v1.0", status: "loading" }));
+  assert.ok(loading.some((element) => element.children.join("") === "state.loading"));
+  const failed = collectElements(TagDetails({ t: (key) => key, name: "v1.0", status: "error", error: "boom" }));
+  assert.match(failed.map((element) => element.children.join("")).join(" | "), /boom/);
+});
+
+test("RemotesPanel lists remotes and treats an empty list as normal", () => {
+  const { RemotesPanel } = loadInternals();
+  const calls = { add: 0, edit: [], prune: [], remove: [] };
+  const tree = RemotesPanel({
+    t: (key) => key,
+    status: "ready",
+    value: { isRepo: true, remotes: [{ name: "origin", fetchUrl: "https://example.com/r.git", pushUrl: "https://example.com/r.git" }] },
+    error: null,
+    onAdd: () => { calls.add += 1; },
+    onEdit: (remote) => calls.edit.push(remote.name),
+    onPrune: (remote) => calls.prune.push(remote.name),
+    onDelete: (remote) => calls.remove.push(remote.name),
+    onRefresh: () => {},
+    onClose: () => {},
+  });
+  const elements = collectElements(tree);
+  assert.ok(elements.some((element) => element.type === "span" && element.props.className === "dgg-remote-name" && element.children.join("") === "origin"));
+  assert.ok(elements.some((element) => element.props.className === "dgg-remote-url" && element.children.join("") === "https://example.com/r.git"));
+  const buttons = elements.filter((element) => element.type === "button");
+  const edit = buttons.find((button) => button.children.join("") === "remote.edit");
+  edit.props.onClick();
+  assert.deepEqual(calls.edit, ["origin"]);
+  buttons.find((button) => button.children.join("") === "remote.prune").props.onClick();
+  assert.deepEqual(calls.prune, ["origin"]);
+  buttons.find((button) => button.children.join("") === "remote.delete").props.onClick();
+  assert.deepEqual(calls.remove, ["origin"]);
+  buttons.find((button) => button.children.join("") === "remote.add").props.onClick();
+  assert.equal(calls.add, 1);
+
+  const empty = collectElements(RemotesPanel({ t: (key) => key, status: "ready", value: { isRepo: true, remotes: [] } }));
+  assert.ok(empty.some((element) => element.children.join("") === "remote.empty"));
+  const failed = collectElements(RemotesPanel({ t: (key) => key, status: "error", error: "no route", value: null }));
+  assert.match(failed.map((element) => element.children.join("")).join(" | "), /no route/);
+});
+
+test("UncommittedView exposes stash, clean, reset and per-file discard", () => {
+  const { UncommittedView } = loadInternals();
+  const calls = { stash: 0, untracked: 0, clean: 0, reset: 0, discard: [] };
+  const value = {
+    isRepo: true,
+    counts: { staged: 1, unstaged: 1, untracked: 0 },
+    staged: [{ status: "M", path: "a.js" }],
+    unstaged: [{ status: "M", path: "b.js" }],
+    untracked: [],
+  };
+  const tree = UncommittedView({
+    t: (key) => key,
+    value,
+    sessionId: "s1",
+    cache: { current: new Map() },
+    dialog: null,
+    dirty: 1,
+    running: false,
+    onStash: () => { calls.stash += 1; },
+    onStashUntracked: () => { calls.untracked += 1; },
+    onClean: () => { calls.clean += 1; },
+    onReset: () => { calls.reset += 1; },
+    onDiscard: (file) => calls.discard.push(file.path),
+    onCancelDialog: () => {},
+    onConfirmDialog: () => {},
+  });
+  const elements = collectElements(tree);
+  const buttons = elements.filter((element) => element.type === "button");
+  buttons.find((button) => button.children.join("") === "action.stashUncommitted").props.onClick();
+  buttons.find((button) => button.children.join("") === "action.stashUntracked").props.onClick();
+  buttons.find((button) => button.children.join("") === "action.cleanUntracked").props.onClick();
+  buttons.find((button) => button.children.join("") === "action.resetUncommitted").props.onClick();
+  assert.deepEqual(calls, { stash: 1, untracked: 1, clean: 1, reset: 1, discard: [] });
+  const rows = elements.filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(rows.length, 2);
+  assert.equal(typeof rows[0].props.onDiscard, "function");
+  rows[0].props.onDiscard({ path: "a.js" });
+  assert.deepEqual(calls.discard, ["a.js"]);
+
+  const withDialog = collectElements(
+    UncommittedView({
+      t: (key) => key,
+      value,
+      dialog: { kind: "resetUncommitted", needs: "mode", options: [], fields: [], choices: [{ value: "mixed", labelKey: "mode.mixed" }, { value: "hard", labelKey: "mode.hard" }], destructive: true, dirtySensitive: false, hash: "", requestedRef: "", preview: null },
+      dirty: 0,
+      running: false,
+      onStash() {},
+      onStashUntracked() {},
+      onClean() {},
+      onReset() {},
+      onDiscard() {},
+      onCancelDialog() {},
+      onConfirmDialog() {},
+    }),
+  );
+  assert.ok(withDialog.some((element) => typeof element.type === "function" && element.type.name === "ActionDialog"), "the pane hosts the shared dialog");
+});
+
+test("DetailView offers merge, rebase, drop and reset and disables drop with a reason", () => {
+  const { DetailView } = loadInternals();
+  const commit = {
+    hash: "h1",
+    abbrev: "h1",
+    parents: ["p1"],
+    authorName: "Ann",
+    authorEmail: "ann@x",
+    authorTime: 1700000000,
+    committerName: "Ann",
+    committerEmail: "ann@x",
+    committerTime: 1700000000,
+    subject: "Subject",
+    body: "",
+    refs: [],
+    stats: { files: 0, insertions: 0, deletions: 0 },
+    files: [],
+  };
+  const baseProps = {
+    t: (key) => key,
+    commit,
+    refIndex: new Map(),
+    branches: [],
+    dirty: 0,
+    dialog: null,
+    run: null,
+    copy: { state: "idle", text: "" },
+    sessionId: "s1",
+    diffCache: { current: new Map() },
+    onOpenDialog: () => {},
+    onCancelDialog: () => {},
+    onConfirmDialog: () => {},
+    onRunFetch: () => {},
+    onSelectCommit: () => {},
+    onCopy: () => {},
+    onRefMenu: () => {},
+  };
+  const elements = collectElements(DetailView({ ...baseProps, dropDisabledReason: "menu.dropHead" }));
+  const labels = elements.filter((element) => element.type === "button").map((element) => element.children.join(""));
+  for (const key of ["action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit"]) {
+    assert.ok(labels.includes(key), "the detail row offers " + key);
+  }
+  const drop = elements.find((element) => element.type === "button" && element.children.join("") === "action.dropCommit");
+  assert.equal(drop.props.disabled, true);
+  assert.equal(drop.props.title, "menu.dropHead");
+  const merge = elements.find((element) => element.type === "button" && element.children.join("") === "action.merge");
+  assert.equal(merge.props.disabled, false);
+  const open = collectElements(DetailView({ ...baseProps, dropDisabledReason: "" }));
+  assert.equal(open.find((element) => element.type === "button" && element.children.join("") === "action.dropCommit").props.disabled, false);
 });

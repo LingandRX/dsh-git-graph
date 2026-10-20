@@ -10,7 +10,7 @@
 | 上游命令 | `package.json` → `contributes.commands`（**10** 个） |
 | 上游 Git 能力 | `src/dataSource.ts` 的 `public` 方法（**51** 个） |
 | 上游快捷键 | `README.md` 的 Keyboard Shortcuts 段 |
-| 我们的能力 | `lib/git.js` 导出的 6 个方法 + `performAction` 的 10 个 case；`lib/index.js` 的 `ACTION_FIELDS`（9 个键）；`lib/client.js` 的 `actions` 数组（9 个）；`cordis.patch.yml` 的 3 个配置键 |
+| 我们的能力 | `lib/git.js` 的 9 个读方法 + `performAction` 的 32 个 action；`lib/index.js` 的 9 条路由；`cordis.patch.yml` 的 4 个配置键（新增 `showStashes`） |
 
 ## 总览
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | 设置项 | 110 | 3 | 3% |
 | 命令 | 10 | 1 个入口（右侧栏 guide 卡片） | 场景等价 |
-| Git 操作 | 51 | 10（UI 接 9） | ~18% |
+| Git 操作 | 51 | 32（`ACTION_FIELDS`） | ~63% |
 | 图视图交互 | 右键菜单 / 查找 / 过滤 / 对比 / 悬浮 / 列设置 | 右键菜单、对比、未提交节点、查找、过滤、排序已迁移；悬浮提示、列宽/列显隐未迁移 | ~80% |
 | 快捷键 | 6 组 | 仅 Escape | 少 |
 
@@ -70,12 +70,12 @@
 
 | 家族 | 上游具备 | 我们缺失 |
 | --- | --- | --- |
-| 分支 | 建/检出/删除/重命名/合并/拉取/推送/rebase/reset 到提交/fetch 进本地分支 | **重命名、删除已迁移**；合并、拉取、推送、rebase、reset、fetchIntoLocalBranch 未迁移 |
-| 标签 | 建/删/推送、查看 annotated tag 详情（tagger 姓名/邮箱/日期/message） | 推送到远端、annotated 详情 |
-| 提交 | 检出/拣选/丢弃(drop)/合并/还原 | 合并、丢弃 |
-| 贮藏 stash | 创建/apply/pop/drop/从 stash 建分支/查看 stash 详情 | **整族缺失**（`stash` 在 `lib/*.js` 零命中） |
-| 未提交改动 | clean 未跟踪文件 / reset / stash / 重置文件到某版本 | 整族缺失 |
-| 远端 | 增/改/删远端、prune、push 到多远端 | 整族缺失（仅 `fetch --prune`） |
+| 分支 | 建/检出/删除/重命名/合并/拉取/推送/rebase/reset 到提交/fetch 进本地分支 | **除 `fetchIntoLocalBranch` 外全部迁移（TODO-12, 21）**；该项见 TODO-21 |
+| 标签 | ~~建/删/推送、查看 annotated tag 详情~~ | **全部迁移（TODO-14）** | — |
+| 提交 | 检出/拣选/丢弃(drop)/合并/还原 | **全部迁移（TODO-13）** | — |
+| 贮藏 stash | 创建/apply/pop/drop/从 stash 建分支/查看 stash 详情 | **全部迁移（TODO-15）** | — |
+| 未提交改动 | clean 未跟踪文件 / reset / stash / 重置文件到某版本 | **全部迁移（TODO-16）** | — |
+| 远端 | 增/改/删远端、prune、push 到多远端 | **增/改/删/prune 已迁移（TODO-17）**；push 到多远端未做 |
 | 归档 | `git archive` 导出 | 缺失 |
 
 ## 四、未迁移：工程化周边
