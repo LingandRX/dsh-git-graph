@@ -2947,3 +2947,93 @@ test("git_graph still exposes only five read-only actions after wave 6", async (
   const log = await tool.execute({ action: "log", limit: 2 }, exec);
   assert.equal(log.action, "log");
 });
+
+// ---------------------------------------------------------------------------
+// Wave 7: push to multiple remotes
+// ---------------------------------------------------------------------------
+
+test("pushToMultipleRemotes pushes a branch to every remote and reports partial failures", async () => {
+  const dir = createScratchRepo("multi-push");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  runGit(["switch", "-q", "-c", "release"], dir);
+  const releaseHash = headOf(dir);
+  const bareOne = createBareRemote("multi-push-one.git");
+  const bareTwo = createBareRemote("multi-push-two.git");
+  runGit(["remote", "add", "one", bareOne], dir);
+  runGit(["remote", "add", "two", bareTwo], dir);
+
+  // Both remotes receive the branch.
+  const both = await api.performAction(dir, "pushToMultipleRemotes", { branch: "release", remotes: ["one", "two"] });
+  assert.equal(both.message, "pushed 2/2 remotes");
+  assert.deepEqual(both.output.split("\n"), ["one: ok", "two: ok"]);
+  assert.equal(runGit(["rev-parse", "release"], bareOne).trim(), releaseHash);
+  assert.equal(runGit(["rev-parse", "release"], bareTwo).trim(), releaseHash);
+
+  // A failing remote is reported without stopping the remaining ones.
+  runGit(["remote", "add", "broken", path.join(fixture.root, "multi-push-missing.git")], dir);
+  const partial = await api.performAction(dir, "pushToMultipleRemotes", { branch: "release", remotes: ["one", "broken", "two"] });
+  assert.equal(partial.message, "pushed 2/3 remotes");
+  const partialLines = partial.output.split("\n");
+  assert.equal(partialLines.length, 3);
+  assert.equal(partialLines[0], "one: ok");
+  assert.match(partialLines[1], /^broken: failed \(/);
+  assert.equal(partialLines[2], "two: ok", "the remote after the failure is still pushed");
+
+  // Zero successes is a failed action with every per-remote line in the error output.
+  runGit(["remote", "add", "broken2", path.join(fixture.root, "multi-push-missing-two.git")], dir);
+  await assert.rejects(api.performAction(dir, "pushToMultipleRemotes", { branch: "release", remotes: ["broken", "broken2"] }), (error) => {
+    assert.equal(error.code, "GIT_FAILED");
+    assert.equal(error.message, "pushed 0/2 remotes");
+    const failureLines = error.stderr.split("\n");
+    assert.equal(failureLines.length, 2);
+    assert.match(failureLines[0], /^broken: failed \(/);
+    assert.match(failureLines[1], /^broken2: failed \(/);
+    return true;
+  });
+
+  const routeHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const viaRoute = await post(routeHost, ACTION_PATH, { action: "pushToMultipleRemotes", branch: "release", remotes: ["one", "broken"] });
+    assert.equal(viaRoute.ok, true);
+    assert.equal(viaRoute.value.message, "pushed 1/2 remotes");
+    assert.match(viaRoute.value.output, /^one: ok$/m);
+    assert.match(viaRoute.value.output, /^broken: failed \(/m);
+
+    const allFailed = await post(routeHost, ACTION_PATH, { action: "pushToMultipleRemotes", branch: "release", remotes: ["broken", "broken2"] });
+    assert.equal(allFailed.ok, false);
+    assert.equal(allFailed.error.code, "GIT_FAILED");
+    assert.equal(allFailed.error.message, "pushed 0/2 remotes");
+    assert.equal(typeof allFailed.error.output, "string");
+    assert.match(allFailed.error.output, /^broken: failed \(/m);
+    assert.match(allFailed.error.output, /^broken2: failed \(/m);
+  } finally {
+    routeHost.dispose();
+  }
+
+  const badRequests = [
+    { branch: "release" },
+    { remotes: ["one"] },
+    { branch: "release", remotes: [] },
+    { branch: "release", remotes: "one" },
+    { branch: "release", remotes: ["one", "-bad"] },
+    { branch: "release", remotes: ["one", "a..b"] },
+    { branch: "release", remotes: [42] },
+    { branch: "-bad", remotes: ["one"] },
+    { branch: "release", remotes: Array.from({ length: 11 }, (_, index) => `remote-${index}`) },
+  ];
+  for (const args of badRequests) {
+    await assert.rejects(api.performAction(dir, "pushToMultipleRemotes", args), (error) => error.code === "BAD_REQUEST", JSON.stringify(args));
+  }
+  await assert.rejects(api.performAction(fixture.empty, "pushToMultipleRemotes", { branch: "main", remotes: ["one"] }), (error) => error.code === "NOT_A_REPO");
+});
+
+test("git_graph stays five read-only actions after multi-remote push", async () => {
+  const tool = host.tools[0];
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  await assert.rejects(tool.execute({ action: "pushToMultipleRemotes" }, exec), /unknown git_graph action/);
+  const log = await tool.execute({ action: "log", limit: 2 }, exec);
+  assert.equal(log.action, "log");
+});

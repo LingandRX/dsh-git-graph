@@ -12,3 +12,11 @@
         repoPath: ""
         maxCommits: 400
         showRemoteBranches: true
+        showStashes: true
+        graphStyle: rounded
+        graphColours: []
+        showSignature: false
+        showEmoji: true
+        issueUrlTemplate: ""
+        useMailmap: false
+        maxDepthOfRepoSearch: 1

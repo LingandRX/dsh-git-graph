@@ -13,14 +13,27 @@ targets the DSH Web UI and the Harness plugin model.
 - **Entry in the right sidebar.** On the right-sidebar guide page (开始) the plugin adds a
   **Git Graph / Git 图谱** card next to *工作区文件*, *上下文* and *新建终端*. Selecting it opens
   the graph as a tab in the right column.
-- **Commit graph** of the Session workspace: colored lanes, merge/octopus commits, branch,
-  remote and tag chips, HEAD marker, dirty-worktree indicator, load-more pagination.
-- **Commit details**: author/committer, timestamps, parents, refs, changed files with
-  A/M/D/R status and line counts, and an expandable unified diff per file.
-- **Actions** (confirmed in-panel): checkout branch, checkout commit (detached), create
-  branch at a commit, cherry-pick, revert, create/delete tag, fetch.
-- **Agent tool `git_graph`** (read-only): `log`, `show`, `diff`, `branches`, `status` for
-  the current Session workspace, sharing the exact same Git layer as the UI.
+- **Commit graph**: colored lanes (rounded or angular), merge/octopus commits, branch/remote/tag
+  and stash chips, HEAD marker, dirty indicator, hover tooltips (containment + which refs),
+  find, branch filtering, column visibility, sort order, load-more pagination.
+- **Commit details**: author/committer, timestamps, parents, refs, signature status, stats,
+  changed files (flat or tree view) with per-file review checkboxes, review progress, and
+  expandable unified diffs.
+- **Comparison view**: Ctrl/Cmd+click two commits (or use the menu) to compare trees, swap
+  sides, and diff any file; the same review marks apply.
+- **Uncommitted changes**: a synthetic row above the graph with staged / unstaged / untracked
+  groups, per-file diffs, stash-all, clean (dry-run first), reset and per-file discard.
+- **Actions** (all confirmed in-panel, destructive ones with explicit warnings): checkout
+  branch/commit, create/rename/delete/merge/pull/push/rebase/reset branches, fetch into a
+  local branch, fetch, push to multiple remotes, cherry-pick, revert, merge, rebase onto, drop
+  and reset to commits, create/delete/push tags with annotated tag details, the full stash
+  family, and remote add/edit/delete/prune.
+- **Multiple repositories**: discovered under the workspace, switchable from the toolbar, with
+  every path fenced to the workspace (`OUTSIDE_WORKSPACE` otherwise).
+- **Presentation**: rounded/angular graph style, custom lane colours, emoji shortcodes, issue
+  links, mailmap support, tab-scoped shortcuts (Ctrl/Cmd+H/R/F/S).
+- **Agent tool `git_graph`** (read-only): `log`, `show`, `diff`, `branches`, `status` for the
+  current Session workspace, sharing the exact same Git layer as the UI.
 
 ## Install
 

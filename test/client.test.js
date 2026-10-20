@@ -198,6 +198,16 @@ const CONTRACT_KEYS = [
   "review.clear",
   "review.toggle",
   "review.failed",
+  "column.showAuthor",
+  "column.showDate",
+  "column.showHash",
+  "tree.flat",
+  "tree.tree",
+  "tree.view",
+  "tree.toggle",
+  "action.pushToMultipleRemotes",
+  "action.branch",
+  "action.remotes",
   "common.refresh",
   "common.close",
 ];
@@ -302,7 +312,8 @@ function loadInternals() {
         "signatureBadge, containsSummary, tooltipPosition, createLruCache, isTypingTarget, shortcutFor, " +
         "fileRowKey, RichText, SignatureBadge, CommitTooltip, RepoLabel, repoOptions, withRepoPath, " +
         "reviewKey, reviewRequest, reviewStateOf, toggleReviewFile, unreviewedPaths, isUnavailableError, " +
-        "ReviewBar, ReviewCheckbox, FileRow, CompareView, Toolbar }",
+        "ReviewBar, ReviewCheckbox, FileRow, CompareView, Toolbar, rowMetaParts, buildFileTree, " +
+        "nextIndex, neighbourHash, stashHashesIn, multiRemotePushItem, FileTree, FileViewToggle, DEFAULT_COLUMNS }",
     ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
@@ -2759,4 +2770,243 @@ test("CompareView renders the review bar and checkboxes for a comparison", () =>
   assert.equal(row.props.reviewed, false);
   assert.equal(row.props.repoPath, "/ws/b");
   assert.equal(typeof row.props.renderLeading, "function");
+});
+
+// ── wave 7: column visibility ───────────────────────────────────────────────
+
+test("rowMetaParts honours the column visibility", () => {
+  const { rowMetaParts, DEFAULT_COLUMNS } = loadInternals();
+  const commit = { hash: "abcdef1234", abbrev: "abcdef1", authorName: "Ann", authorTime: 1700000000 };
+  assert.deepEqual(plain(DEFAULT_COLUMNS), { author: true, date: true, hash: true });
+  const all = Array.from(rowMetaParts(commit, DEFAULT_COLUMNS, "en"));
+  assert.equal(all[0], "abcdef1");
+  assert.equal(all[1], "Ann");
+  assert.equal(all.length, 3, "hash, author and relative date are all shown");
+  assert.deepEqual(Array.from(rowMetaParts(commit, { author: false }, "en")).filter((part) => part === "Ann"), []);
+  assert.equal(rowMetaParts(commit, { author: false }, "en").length, 2);
+  assert.equal(rowMetaParts(commit, { date: false }, "en").length, 2);
+  assert.deepEqual(Array.from(rowMetaParts(commit, { hash: false }, "en")), ["Ann", rowMetaParts(commit, {}, "en")[2]]);
+  assert.deepEqual(Array.from(rowMetaParts(commit, { author: false, date: false, hash: false }, "en")), []);
+  // The nested-object visibility form still works, and missing commit fields are skipped.
+  assert.deepEqual(Array.from(rowMetaParts({ hash: "0123456789" }, { author: true, date: true, hash: true }, "en")), ["0123456"]);
+  assert.deepEqual(Array.from(rowMetaParts(null, null, "en")), []);
+});
+
+test("Toolbar exposes the three column visibility checkboxes", () => {
+  const { Toolbar } = loadInternals();
+  const toggled = [];
+  const props = {
+    t: (key) => key,
+    repoLabel: "repo",
+    repoPath: "/tmp/repo",
+    branchLabel: "main",
+    dirty: 0,
+    menuOpen: true,
+    order: "date",
+    columns: { author: true, date: false, hash: true },
+    onToggleColumn: (key) => toggled.push(key),
+    onRefresh() {}, onToggleFind() {}, onToggleFilter() {}, onOrderChange() {},
+    onToggleMenu() {}, onCloseMenu() {}, onFetch() {}, onOpenRemotes() {}, onBack() {},
+  };
+  const tree = Toolbar(props);
+  const labels = collectElements(tree).filter((element) => element.type === "label" && String(element.props.className || "").includes("dgg-menu-check"));
+  assert.equal(labels.length, 3, "show author / show date / show hash");
+  const boxes = collectElements(tree).filter((element) => element.props.type === "checkbox");
+  assert.equal(boxes.length, 3);
+  assert.deepEqual(Array.from(boxes, (box) => box.props.checked), [true, false, true]);
+  boxes.forEach((box) => box.props.onChange());
+  assert.deepEqual(toggled, ["author", "date", "hash"]);
+});
+
+test("CommitRow omits hidden meta segments", () => {
+  const { CommitRow } = loadInternals();
+  const commit = { hash: "h1", abbrev: "h1", subject: "Subject", parents: [], refs: [], authorName: "Ann", authorTime: 1700000000 };
+  const metaOf = (visibility) => {
+    const tree = CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), metaVisibility: visibility });
+    return collectElements(tree).find((element) => String(element.props.className || "").includes("dgg-meta")).children.join("");
+  };
+  assert.match(metaOf(undefined), /^h1 · Ann · /);
+  assert.equal(metaOf({ author: false, date: false, hash: false }), "");
+  assert.equal(metaOf({ hash: false, date: false }).includes("h1"), false);
+});
+
+// ── wave 7: file tree ───────────────────────────────────────────────────────
+
+test("buildFileTree nests directories first, compacts chains and counts files", () => {
+  const { buildFileTree } = loadInternals();
+  const tree = buildFileTree([
+    { path: "src/a.js" }, { path: "src/b.js" }, { path: "docs/readme.md" }, { path: "root.txt" },
+  ]);
+  assert.equal(tree.fileCount, 4);
+  assert.deepEqual(Array.from(tree.nodes, (node) => node.type + ":" + node.name), ["dir:docs", "dir:src", "file:root.txt"]);
+  const src = tree.nodes[1];
+  assert.deepEqual(Array.from(src.children, (node) => node.name), ["a.js", "b.js"]);
+  assert.deepEqual(Array.from(tree.nodes[0].children, (node) => node.name), ["readme.md"]);
+
+  const compacted = buildFileTree([{ path: "a/b/c/x.js" }, { path: "a/b/c/y.js" }, { path: "a/d.js" }]);
+  assert.equal(compacted.nodes.length, 1);
+  const a = compacted.nodes[0];
+  assert.equal(a.name, "a");
+  assert.deepEqual(Array.from(a.children, (node) => node.type + ":" + node.name), ["dir:b/c", "file:d.js"]);
+  assert.equal(a.children[0].path, "a/b/c");
+  assert.deepEqual(Array.from(a.children[0].children, (node) => node.name), ["x.js", "y.js"]);
+  assert.equal(a.children[1].file.path, "a/d.js");
+
+  assert.deepEqual(plain(buildFileTree(null)), { nodes: [], fileCount: 0 });
+  assert.deepEqual(plain(buildFileTree([{ path: "" }, null])), { nodes: [], fileCount: 0 });
+  const duplicates = buildFileTree([{ path: "a.js" }, { path: "a.js" }]);
+  assert.equal(duplicates.fileCount, 1, "duplicate paths collapse");
+  assert.equal(duplicates.nodes.length, 1);
+});
+
+test("FileTree renders collapsible directories and delegates file rows", () => {
+  const { FileTree } = loadInternals();
+  const nodes = [
+    { type: "dir", name: "src", path: "src", children: [
+      { type: "file", name: "a.js", path: "src/a.js", file: { path: "src/a.js" } },
+    ] },
+    { type: "file", name: "root.txt", path: "root.txt", file: { path: "root.txt" } },
+  ];
+  const rendered = [];
+  const tree = FileTree({ t: (key) => key, nodes, renderFile: (file, path) => { rendered.push(path); return file.path; } });
+  const elements = collectElements(tree);
+  const dirButton = elements.find((element) => String(element.props.className || "").includes("dgg-tree-dir-head"));
+  assert.equal(dirButton.props["aria-expanded"], true, "directories start expanded");
+  assert.equal(dirButton.props["aria-label"], "tree.toggle src");
+  assert.equal(elements.some((element) => String(element.props.className || "").includes("dgg-tree-children")), true);
+  assert.deepEqual(rendered, ["src/a.js", "root.txt"]);
+});
+
+test("FileViewToggle switches between flat and tree", () => {
+  const { FileViewToggle } = loadInternals();
+  const changes = [];
+  const tree = FileViewToggle({ t: (key) => key, value: "flat", onChange: (mode) => changes.push(mode) });
+  const buttons = collectElements(tree).filter((element) => element.type === "button");
+  assert.deepEqual(Array.from(buttons, (button) => button.children.join("")), ["tree.flat", "tree.tree"]);
+  assert.equal(buttons[0].props["aria-pressed"], true);
+  buttons[1].props.onClick();
+  assert.deepEqual(changes, ["tree"]);
+  const toggled = FileViewToggle({ t: (key) => key, value: "tree", onChange() {} });
+  assert.equal(collectElements(toggled).filter((element) => element.type === "button")[1].props["aria-pressed"], true);
+});
+
+// ── wave 7: stash / arrow navigation ───────────────────────────────────────
+
+test("nextIndex and neighbourHash move through the displayed order", () => {
+  const { nextIndex, neighbourHash } = loadInternals();
+  assert.equal(nextIndex(0, -1, 1), -1);
+  assert.equal(nextIndex(3, -1, 1), 0);
+  assert.equal(nextIndex(3, -1, -1), 2);
+  assert.equal(nextIndex(3, 2, 1), 0, "stash navigation cycles");
+  assert.equal(nextIndex(3, 0, -1), 2);
+  assert.equal(nextIndex(3, 1, 1), 2);
+
+  const commits = [{ hash: "a" }, { hash: "b" }, { hash: "c" }];
+  assert.equal(neighbourHash(commits, [0, 1, 2], "b", 1), "c");
+  assert.equal(neighbourHash(commits, [0, 1, 2], "b", -1), "a");
+  assert.equal(neighbourHash(commits, [0, 1, 2], "a", -1), "", "no wrap above the first commit");
+  assert.equal(neighbourHash(commits, [0, 1, 2], "c", 1), "", "no wrap below the last commit");
+  assert.equal(neighbourHash(commits, [2, 0], "a", -1), "c", "displayed order is honoured");
+  assert.equal(neighbourHash(commits, [0], "a", 1), "");
+  assert.equal(neighbourHash(commits, [0, 1, 2], "zzz", 1), "");
+});
+
+test("stashHashesIn lists stash-bearing commits in display order", () => {
+  const { stashHashesIn } = loadInternals();
+  const commits = [{ hash: "a1" }, { hash: "b1" }, { hash: "c1" }];
+  const refs = [
+    { name: "refs/stash@{0}", shortName: "stash@{0}", type: "stash", hash: "b1" },
+    { name: "refs/stash@{1}", shortName: "stash@{1}", type: "stash", hash: "b1" },
+    { name: "refs/heads/main", shortName: "main", type: "branch", hash: "c1" },
+    { name: "refs/stash@{2}", shortName: "stash@{2}", type: "stash", hash: "a1" },
+  ];
+  assert.deepEqual(Array.from(stashHashesIn(commits, [0, 1, 2], refs)), ["a1", "b1"]);
+  assert.deepEqual(Array.from(stashHashesIn(commits, [2], refs)), []);
+  assert.deepEqual(Array.from(stashHashesIn(commits, null, refs)), []);
+  assert.deepEqual(Array.from(stashHashesIn(commits, [0, 1, 2], null)), []);
+});
+
+test("shortcutFor maps Ctrl/Cmd+S to the stash navigation", () => {
+  const { shortcutFor } = loadInternals();
+  assert.equal(shortcutFor({ key: "s", ctrlKey: true }), "stash-next");
+  assert.equal(shortcutFor({ key: "S", metaKey: true }), "stash-next");
+  assert.equal(shortcutFor({ key: "s", ctrlKey: true, shiftKey: true }), "stash-prev");
+  assert.equal(shortcutFor({ key: "s", metaKey: true, shiftKey: true }), "stash-prev");
+  assert.equal(shortcutFor({ key: "s" }), null);
+  assert.equal(shortcutFor({ key: "s", ctrlKey: true }, { tagName: "INPUT" }), null, "typing targets stay guarded");
+});
+
+// ── wave 7: multi-remote push ───────────────────────────────────────────────
+
+test("multiRemotePushItem only appears for branches and honours remotes/busy", () => {
+  const { multiRemotePushItem } = loadInternals();
+  const chip = { label: "dev", kind: "branch", isHead: false };
+  const item = multiRemotePushItem(chip, { hasRemotes: true, busy: false })[0];
+  assert.equal(item.kind, "pushToMultipleRemotes");
+  assert.equal(item.labelKey, "action.pushToMultipleRemotes");
+  assert.equal(item.after, "push-branch");
+  assert.equal(multiRemotePushItem({ label: "v1", kind: "tag" }, { hasRemotes: true })[0], undefined);
+  const gated = multiRemotePushItem(chip, { hasRemotes: false, busy: false })[0];
+  assert.equal(gated.disabled, true);
+  assert.equal(gated.reasonKey, "menu.noRemotes");
+  const busy = multiRemotePushItem(chip, { hasRemotes: true, busy: true })[0];
+  assert.equal(busy.disabled, true);
+  assert.equal(busy.reasonKey, "menu.busy");
+});
+
+test("pushToMultipleRemotes arguments and dialog shape", () => {
+  const { actionArguments, actionDialogSpec } = loadInternals();
+  const args = actionArguments("pushToMultipleRemotes", { ref: ["origin", "backup"], extra: "dev" });
+  assert.deepEqual(plain(args), { branch: "dev", remotes: ["origin", "backup"] });
+  assert.deepEqual(plain(actionArguments("pushToMultipleRemotes", { ref: ["origin", ""], extra: "dev" })), { branch: "dev", remotes: ["origin"] });
+  assert.deepEqual(plain(actionArguments("pushToMultipleRemotes", { ref: null, extra: "" })), {});
+  const spec = actionDialogSpec("pushToMultipleRemotes", { remotes: ["origin", "backup"] });
+  assert.equal(spec.remotesMany, true);
+  assert.equal(spec.needs, "remote");
+  assert.deepEqual(Array.from(spec.options, (option) => option.name), ["origin", "backup"]);
+  assert.equal(spec.checks.length, 0, "no force checkbox in this dialog");
+});
+
+test("ActionDialog renders a remote checkbox per remote and submits the picks plus branch", () => {
+  const { ActionDialog } = loadInternals();
+  const confirmed = [];
+  const dialog = {
+    kind: "pushToMultipleRemotes",
+    needs: "remote",
+    options: [{ name: "origin" }, { name: "backup" }],
+    checks: [],
+    choices: [],
+    fields: [],
+    remotesMany: true,
+    requestedRef: "dev",
+    warnings: [],
+    modeWarnings: {},
+    checkWarnings: {},
+    destructive: false,
+    dirtySensitive: false,
+  };
+  const tree = ActionDialog({ t: (key) => key, dialog, dirty: 0, running: false, onCancel() {}, onConfirm: (...args) => confirmed.push(args) });
+  const note = collectElements(tree).find((element) => String(element.props.className || "").includes("dgg-dialog-note"));
+  assert.equal(note.children.join(""), "action.branch: dev");
+  const boxes = collectElements(tree).filter((element) => element.props.type === "checkbox");
+  assert.equal(boxes.length, 2, "one checkbox per remote, none for force");
+  assert.deepEqual(Array.from(boxes, (box) => box.props.checked), [true, true], "all remotes start selected");
+  assert.equal(boxes[0].props["aria-label"], "action.remote origin");
+  // All remotes are preselected; the fake-React harness cannot re-render after a
+  // deselect, so the submitted array is the initial selection.
+  const run = collectElements(tree).find((element) => element.type === "button" && element.children.join("") === "action.run");
+  run.props.onClick();
+  assert.deepEqual(plain(confirmed[0]), ["", ["origin", "backup"], "dev"]);
+
+  // With every remote deselected the run button is disabled.
+  const empty = ActionDialog({
+    t: (key) => key,
+    dialog: { ...dialog, options: [] },
+    dirty: 0,
+    running: false,
+    onCancel() {},
+    onConfirm() {},
+  });
+  const emptyRun = collectElements(empty).find((element) => element.type === "button" && element.children.join("") === "action.run");
+  assert.equal(emptyRun.props.disabled, true);
 });

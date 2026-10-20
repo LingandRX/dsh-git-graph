@@ -267,6 +267,15 @@
 - **完成**（2026-10-21）：host `fetchIntoLocalBranch`（`git fetch <remote> <branch>:<local>`，三个参数都过 ref 校验，
   **不带** `--force`、**不带** `+` 前缀），非快进由 git 拒绝并把 stderr 透传；client 分支菜单已改用该动作。
 
+## 第 7 波补充（收尾 parity 残余交互）
+
+- [x] 列显隐（A6 的可做部分；列宽拖拽声明为非目标）
+- [x] 文件树视图 + 紧凑文件夹（A8）
+- [x] 剩余标签页快捷键：S / Shift+S 跳 stash、上下键移动详情（A9）
+- [x] `pushToMultipleRemotes`（parity「远端」行）
+- 说明：`git archive`、服务端全量搜索、工作区改动与指定提交对比、glob 过滤、头像、PR 集成等
+  已在 `docs/parity.md` 第五节显式声明为非目标/残余，并写明理由。
+
 ## 非目标（明确不做）
 
 | 项 | 原因 |
