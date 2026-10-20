@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **87** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **112** 个用例全绿）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -71,10 +71,14 @@
 - **文件**：`lib/client.js`（菜单项表），无 host 改动。
 - **验收**：每个菜单项等价于详情页同名按钮（同一 `startAction` 路径、同一确认框），发出完全相同的请求体。
 
-### [ ] TODO-5 分支/标签级菜单项（P1）
+### [x] TODO-5 分支/标签级菜单项（P1）
 
 - **目标**：右键 branch chip → 检出 / 删除 / 重命名；右键 tag chip → 删除 / 推送。
 - **依赖**：TODO-1、TODO-6、TODO-7。
+- **完成**（2026-10-21）：`refMenuItems` 提供分支（检出/重命名/删除/复制名）、标签（删除/复制名）、
+  远端（复制 ref/fetch）；当前分支可检出可重命名、不可删除；无远端时 fetch 禁用并给出原因。
+  `ActionDialog` 新增 `needs: "rename"` 双输入框；host 新增 `renameBranch`（两个名字都过 ref 校验，
+  重名冲突返回 GIT_FAILED）。
 
 ---
 
@@ -117,27 +121,33 @@
 
 ## 阶段 3：查找与过滤
 
-### [ ] TODO-9 查找控件（P1）
+### [x] TODO-9 查找控件（P1）
 
 - **目标**：图内搜索提交（对齐 A4），快捷键沿用 DSH 侧栏习惯（先做面板内按钮 + 输入框，快捷键可选）。
 - **文件**：`lib/client.js`（搜索框 + 高亮 + 上下跳转），host 无需改动（客户端对已加载页做过滤即可）。
-- **验收**：
-  - 输入即过滤（message / abbrev+hash / author / refs 四类，防抖 150ms，纯大小写不敏感）；
+- **完成**（2026-10-21）：工具栏放大镜展开查找行，对已加载页做大小写不敏感的子串匹配
+  （subject / 作者名与邮箱 / 完整与短哈希 / ref 标签），显示 `N/M`，Enter / Shift+Enter 与前后按钮
+  移动并滚动到可见；Escape 清空并关闭、恢复全量。纯函数 `filterCommits` / `nextMatch` 有直接测试。
   - 命中计数 `N/M`、Enter/Shift+Enter 或上下按钮跳转并滚动到可见；
   - 无命中显示空态；Esc 清空并退出搜索；
   - 补 client 用例 2（匹配与跳转顺序）。
 
-### [ ] TODO-10 分支过滤（P2）
+### [x] TODO-10 分支过滤（P2）
 
 - **目标**：只显示选中分支的提交（对齐 A5）。
 - **文件**：`lib/index.js`+`lib/git.js`（`graph` 请求增加 `branches: string[]`，`git log <branches...>`）、`lib/client.js`（多选下拉）。
 - **验收**：默认全部；选中子集后请求携带该子集且图只含相关提交；选择状态在本次会话内保持；补 host 用例 1。
+- **完成**（2026-10-21）：host `readGraph` 支持 `branches[]`（只限制 revision walk，refs 列表保持完整，
+  便于 UI 继续渲染 chips），未知 ref → BAD_REQUEST；client 多选复选 + "全部"重置，清空时**省略该字段**
+  使请求与默认完全一致。
 
-### [ ] TODO-11 列显隐与排序（P2）
+### [x] TODO-11 列显隐与排序（P2）
 
 - **目标**：可隐藏作者/时间、可切换 `--date-order` / `--author-date-order` / `--topo-order`（对齐 A6、C4）。
 - **文件**：`cordis.patch.yml`（新增 `commitOrder`、`hideAuthor`、`hideDate`）、`lib/git.js`（排序参数）、`lib/client.js`（工具栏菜单开关，选择存 `localStorage`）。
 - **验收**：切换立即生效且刷新后保持；非法排序值回落到 `date-order`；补 host 用例 1（参数映射）。
+- **完成**（2026-10-21）：host 支持 `order` = date / author-date / topo（未知名 BAD_REQUEST）；
+  client 工具栏溢出菜单三选一，默认 `date` **不发送该字段**（测试断言默认请求体逐字节不变）。
 
 ---
 
