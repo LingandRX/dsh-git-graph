@@ -30,6 +30,8 @@ const STASHES_PATH = "/api/dsh-git-graph/stashes";
 const TAG_PATH = "/api/dsh-git-graph/tag";
 const REMOTES_PATH = "/api/dsh-git-graph/remotes";
 const CONTAINS_PATH = "/api/dsh-git-graph/contains";
+const REPOS_PATH = "/api/dsh-git-graph/repos";
+const REVIEW_PATH = "/api/dsh-git-graph/review";
 
 /** Filesystem and git fixtures shared by the suite. */
 const fixture = {
@@ -245,7 +247,7 @@ function createFakeContext(services) {
 }
 
 /** Apply the plugin to a fake host and capture registrations. */
-function createHost({ config, defaultDirectory, includeConnection = true, includeTools = true } = {}) {
+function createHost({ config, defaultDirectory, includeConnection = true, includeTools = true, storageDomain } = {}) {
   const routes = new Map();
   const tools = [];
   const sessions = new Map();
@@ -262,6 +264,7 @@ function createHost({ config, defaultDirectory, includeConnection = true, includ
       },
     },
   };
+  if (storageDomain !== undefined) services.storageDomain = storageDomain;
   if (includeConnection) {
     services.connection = {
       fetch: {
@@ -287,6 +290,43 @@ function createHost({ config, defaultDirectory, includeConnection = true, includ
   const fake = createFakeContext(services);
   apply(fake.ctx, config);
   return { ...fake, routes, tools, sessions, services };
+}
+
+/** In-memory stand-in for the Host `storageDomain` service (one domain, one table). */
+function createFakeStorageDomain() {
+  const records = new Map();
+  const opened = [];
+  const domain = {
+    name: "dsh_git_graph",
+    table(name) {
+      assert.equal(name, "reviews");
+      return {
+        get(key) {
+          return records.get(key);
+        },
+        async put(key, value) {
+          records.set(key, JSON.parse(JSON.stringify(value)));
+        },
+        async delete(key) {
+          return records.delete(key);
+        },
+        keys() {
+          return [...records.keys()];
+        },
+      };
+    },
+    async close() {},
+  };
+  return {
+    records,
+    opened,
+    service: {
+      async open(spec) {
+        opened.push(spec);
+        return domain;
+      },
+    },
+  };
 }
 
 /** POST one JSON body to a registered route and decode its envelope. */
@@ -694,8 +734,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 10);
-  assert.equal(second.routes.size, 10);
+  assert.equal(first.routes.size, 12);
+  assert.equal(second.routes.size, 12);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -714,11 +754,11 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the ten POST Fetch routes", () => {
+test("apply registers exactly the twelve POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
   assert.deepEqual(
     routes,
-    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
+    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, REPOS_PATH, REVIEW_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
   );
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
@@ -734,7 +774,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 10);
+  assert.equal(noTools.routes.size, 12);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -2581,4 +2621,329 @@ test("git_graph stays five read-only actions with no presentation payload", asyn
   assert.equal("presentation" in log, false);
   assert.equal("signature" in (log.commits[0] ?? {}), false);
   await assert.rejects(tool.execute({ action: "contains" }, exec), /unknown git_graph action/);
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6: repo discovery, workspace path fence, review marks
+// ---------------------------------------------------------------------------
+
+test("repos route discovers nested repositories within the depth limit", async () => {
+  const workspace = path.join(fixture.root, "repos-workspace");
+  fs.mkdirSync(workspace);
+  const makeRepo = (relative) => {
+    const directory = path.join(workspace, relative);
+    fs.mkdirSync(directory, { recursive: true });
+    runGit(["init", "-q", "-b", "main"], directory);
+    return fs.realpathSync(directory);
+  };
+  const repoA = makeRepo("repo-a");
+  const repoB = makeRepo("repo-b");
+  const nested = makeRepo(path.join("group", "repo-c"));
+  makeRepo(path.join("node_modules", "pkg"));
+  makeRepo(path.join("build", "artifact"));
+
+  const depthOneHost = createHost({ config: undefined, defaultDirectory: workspace });
+  try {
+    const depthOne = await post(depthOneHost, REPOS_PATH, {});
+    assert.equal(depthOne.ok, true);
+    assert.equal(depthOne.value.workspacePath, workspace);
+    assert.equal(depthOne.value.maxDepth, 1);
+    assert.deepEqual(
+      depthOne.value.repos.map((repo) => repo.path).sort(),
+      [repoA, repoB].sort(),
+      "node_modules/build repos and grandchildren are not reported at depth 1",
+    );
+    assert.equal(depthOne.value.repos.every((repo) => repo.isCurrent === false), true);
+    assert.equal("truncated" in depthOne.value, false);
+  } finally {
+    depthOneHost.dispose();
+  }
+
+  const depthTwoHost = createHost({ config: undefined, defaultDirectory: workspace });
+  try {
+    const depthTwo = await post(depthTwoHost, REPOS_PATH, { maxDepth: 2 });
+    assert.equal(depthTwo.value.maxDepth, 2);
+    assert.deepEqual(
+      depthTwo.value.repos.map((repo) => repo.path).sort(),
+      [repoA, repoB, nested].sort(),
+    );
+  } finally {
+    depthTwoHost.dispose();
+  }
+
+  const configDepthHost = createHost({ config: { maxDepthOfRepoSearch: 2 }, defaultDirectory: workspace });
+  try {
+    const viaConfig = await post(configDepthHost, REPOS_PATH, {});
+    assert.equal(viaConfig.value.maxDepth, 2);
+    assert.equal(viaConfig.value.repos.length, 3);
+  } finally {
+    configDepthHost.dispose();
+  }
+});
+
+test("repos route marks the session repository current and accepts empty workspaces", async () => {
+  const dir = createScratchRepo("repos-single");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "A");
+  const singleHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const value = await post(singleHost, REPOS_PATH, {});
+    assert.equal(value.ok, true);
+    assert.equal(value.value.maxDepth, 1);
+    assert.deepEqual(value.value.repos, [{ path: fs.realpathSync(dir), name: path.basename(dir), isCurrent: true }]);
+  } finally {
+    singleHost.dispose();
+  }
+
+  const emptyWorkspace = path.join(fixture.root, "repos-empty");
+  fs.mkdirSync(emptyWorkspace);
+  const emptyHost = createHost({ config: undefined, defaultDirectory: emptyWorkspace });
+  try {
+    const value = await post(emptyHost, REPOS_PATH, {});
+    assert.equal(value.ok, true, "an empty workspace is a normal state");
+    assert.deepEqual(value.value.repos, []);
+    assert.equal("truncated" in value.value, false);
+  } finally {
+    emptyHost.dispose();
+  }
+});
+
+test("repos discovery caps repositories and directories with truncated:true", async () => {
+  const capped = path.join(fixture.root, "repos-capped");
+  fs.mkdirSync(capped);
+  for (let index = 0; index < 51; index += 1) {
+    fs.mkdirSync(path.join(capped, `repo-${String(index).padStart(2, "0")}`, ".git"), { recursive: true });
+  }
+  const cappedHost = createHost({ config: undefined, defaultDirectory: capped });
+  try {
+    const value = await post(cappedHost, REPOS_PATH, {});
+    assert.equal(value.ok, true);
+    assert.equal(value.value.repos.length, 50);
+    assert.equal(value.value.truncated, true);
+  } finally {
+    cappedHost.dispose();
+  }
+
+  const wide = path.join(fixture.root, "repos-wide");
+  fs.mkdirSync(wide);
+  for (let index = 0; index < 2001; index += 1) fs.mkdirSync(path.join(wide, `d-${index}`));
+  const wideHost = createHost({ config: undefined, defaultDirectory: wide });
+  try {
+    const value = await post(wideHost, REPOS_PATH, {});
+    assert.equal(value.ok, true);
+    assert.deepEqual(value.value.repos, []);
+    assert.equal(value.value.truncated, true, "the directory cap reports truncation");
+  } finally {
+    wideHost.dispose();
+  }
+});
+
+test("every path-taking route refuses paths outside the session workspace", async () => {
+  const workspace = path.join(fixture.root, "whitelist-workspace");
+  fs.mkdirSync(workspace);
+  const repo = path.join(workspace, "repo");
+  fs.mkdirSync(repo);
+  runGit(["init", "-q", "-b", "main"], repo);
+  writeFile(path.join(repo, "a.txt"), "a\n");
+  commitAll(repo, "A");
+  const outside = path.join(fixture.root, "whitelist-outside");
+  fs.mkdirSync(outside);
+
+  const host = createHost({ config: undefined, defaultDirectory: workspace });
+  try {
+    const cases = [
+      [GRAPH_PATH, {}],
+      [COMMIT_PATH, { hash: "HEAD" }],
+      [DIFF_PATH, { hash: "HEAD", file: "a.txt" }],
+      [ACTION_PATH, { action: "fetch" }],
+      [UNCOMMITTED_PATH, {}],
+      [COMPARE_PATH, { base: "HEAD", head: "HEAD" }],
+      [STASHES_PATH, {}],
+      [TAG_PATH, { name: "v1" }],
+      [REMOTES_PATH, {}],
+      [CONTAINS_PATH, { hash: "HEAD" }],
+      [REPOS_PATH, {}],
+      [REVIEW_PATH, { action: "read", kind: "commit", base: "HEAD", head: "HEAD" }],
+    ];
+    for (const [routePath, body] of cases) {
+      const envelope = await post(host, routePath, { ...body, path: outside });
+      assert.equal(envelope.ok, false, routePath);
+      assert.equal(envelope.error.code, "OUTSIDE_WORKSPACE", routePath);
+      assert.equal(envelope.error.message.includes(outside), true, `${routePath} names the refused path`);
+    }
+
+    const inside = await post(host, GRAPH_PATH, { path: "repo" });
+    assert.equal(inside.ok, true, "a path inside the workspace is accepted");
+    assert.equal(inside.value.isRepo, true);
+
+    const dotDot = await post(host, GRAPH_PATH, { path: "../whitelist-outside" });
+    assert.equal(dotDot.ok, false);
+    assert.equal(dotDot.error.code, "OUTSIDE_WORKSPACE", "'..' escapes are refused");
+
+    const link = path.join(workspace, "escape-link");
+    fs.symlinkSync(outside, link, "dir");
+    const symlinkEnvelope = await post(host, GRAPH_PATH, { path: "escape-link" });
+    assert.equal(symlinkEnvelope.ok, false);
+    assert.equal(symlinkEnvelope.error.code, "OUTSIDE_WORKSPACE", "symlink escapes are refused");
+
+    const pinnedRepo = createScratchRepo("whitelist-pinned");
+    writeFile(path.join(pinnedRepo, "a.txt"), "a\n");
+    commitAll(pinnedRepo, "A");
+    const pinnedHost = createHost({ config: { repoPath: pinnedRepo }, defaultDirectory: workspace });
+    try {
+      const pinned = await post(pinnedHost, GRAPH_PATH, {});
+      assert.equal(pinned.ok, true, "the repoPath config override is exempt from the fence");
+      assert.equal(pinned.value.isRepo, true);
+      assert.equal(pinned.value.repoPath, fs.realpathSync(pinnedRepo));
+    } finally {
+      pinnedHost.dispose();
+    }
+  } finally {
+    host.dispose();
+  }
+});
+
+test("review marks read/toggle/clear with authoritative totals", async () => {
+  const dir = createScratchRepo("review-marks");
+  writeFile(path.join(dir, "one.txt"), "1\n");
+  writeFile(path.join(dir, "two.txt"), "2\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "one.txt"), "1 changed\n");
+  writeFile(path.join(dir, "two.txt"), "2 changed\n");
+  const head = commitAll(dir, "head");
+  const storage = createFakeStorageDomain();
+  const host = createHost({ config: undefined, defaultDirectory: dir, storageDomain: storage.service });
+  try {
+    assert.equal(storage.opened.length, 1, "the domain is opened once through storageDomain");
+    assert.equal(storage.opened[0].name, "dsh_git_graph");
+    assert.deepEqual(Object.keys(storage.opened[0].tables), ["reviews"]);
+
+    const read = await post(host, REVIEW_PATH, { sessionId: "s1", action: "read", kind: "commit", base: head, head });
+    assert.equal(read.ok, true);
+    assert.deepEqual(read.value, { files: {}, total: 2, reviewed: 0 });
+
+    const toggled = await post(host, REVIEW_PATH, { sessionId: "s1", action: "toggle", kind: "commit", base: head, head, file: "one.txt" });
+    assert.equal(toggled.ok, true);
+    assert.equal(toggled.value.total, 2, "total is the commit file count");
+    assert.equal(toggled.value.reviewed, 1);
+    assert.equal(typeof toggled.value.files["one.txt"], "number");
+
+    const readAgain = await post(host, REVIEW_PATH, { sessionId: "s1", action: "read", kind: "commit", base: head, head });
+    assert.equal(readAgain.value.reviewed, 1);
+    assert.equal("one.txt" in readAgain.value.files, true);
+
+    const untoggled = await post(host, REVIEW_PATH, { sessionId: "s1", action: "toggle", kind: "commit", base: head, head, file: "one.txt" });
+    assert.equal(untoggled.value.reviewed, 0);
+    assert.deepEqual(untoggled.value.files, {});
+
+    const compareToggle = await post(host, REVIEW_PATH, { sessionId: "s1", action: "toggle", kind: "compare", base, head, file: "one.txt" });
+    assert.equal(compareToggle.value.total, 2, "total is the compare file count");
+    assert.equal(compareToggle.value.reviewed, 1);
+    const compareRead = await post(host, REVIEW_PATH, { sessionId: "s1", action: "read", kind: "compare", base, head });
+    assert.equal(compareRead.value.total, 2);
+    assert.equal(compareRead.value.reviewed, 1);
+
+    const cleared = await post(host, REVIEW_PATH, { sessionId: "s1", action: "clear", kind: "commit", base: head, head });
+    assert.deepEqual(cleared.value, { files: {}, total: 0, reviewed: 0 });
+    const afterClear = await post(host, REVIEW_PATH, { sessionId: "s1", action: "read", kind: "commit", base: head, head });
+    assert.deepEqual(afterClear.value.files, {});
+    assert.equal(afterClear.value.total, 2, "total stays authoritative after clear");
+    assert.equal(storage.records.get("s1").entries.length, 1, "only the compare entry remains");
+  } finally {
+    host.dispose();
+  }
+});
+
+test("review storage prunes entries older than 90 days and caps at 200", async () => {
+  const dir = createScratchRepo("review-prune");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const head = commitAll(dir, "A");
+  const now = Date.now();
+  const hex = (value) => value.toString(16).padStart(40, "0");
+
+  const storage = createFakeStorageDomain();
+  storage.records.set("s2", {
+    entries: [
+      { kind: "compare", base: "a".repeat(40), head: "b".repeat(40), files: {}, updatedAt: now - 91 * 24 * 60 * 60 * 1000 },
+      { kind: "compare", base: "c".repeat(40), head: "d".repeat(40), files: {}, updatedAt: now - 1000 },
+    ],
+  });
+  const pruneHost = createHost({ config: undefined, defaultDirectory: dir, storageDomain: storage.service });
+  try {
+    const read = await post(pruneHost, REVIEW_PATH, { sessionId: "s2", action: "read", kind: "commit", base: head, head });
+    assert.equal(read.ok, true);
+    const stored = storage.records.get("s2");
+    assert.equal(stored.entries.length, 1, "the expired entry is dropped on read");
+    assert.equal(stored.entries[0].base, "c".repeat(40));
+  } finally {
+    pruneHost.dispose();
+  }
+
+  const capStorage = createFakeStorageDomain();
+  const seeded = [];
+  for (let index = 0; index < 200; index += 1) {
+    seeded.push({ kind: "compare", base: hex(index), head: hex(index + 1), files: {}, updatedAt: now - (200 - index) * 1000 });
+  }
+  capStorage.records.set("s3", { entries: seeded });
+  const capHost = createHost({ config: undefined, defaultDirectory: dir, storageDomain: capStorage.service });
+  try {
+    const toggled = await post(capHost, REVIEW_PATH, {
+      sessionId: "s3",
+      action: "toggle",
+      kind: "commit",
+      base: head,
+      head,
+      file: "a.txt",
+    });
+    assert.equal(toggled.ok, true);
+    const stored = capStorage.records.get("s3");
+    assert.equal(stored.entries.length, 200, "the per-session cap keeps the newest 200 entries");
+    assert.equal(stored.entries.some((entry) => entry.base === hex(0)), false, "the oldest entry is dropped");
+    assert.equal(stored.entries.some((entry) => entry.kind === "commit"), true, "the new entry is kept");
+  } finally {
+    capHost.dispose();
+  }
+});
+
+test("review route returns UNAVAILABLE without storageDomain and BAD_REQUEST for invalid input", async () => {
+  const dir = createScratchRepo("review-errors");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const head = commitAll(dir, "A");
+
+  const noStorageHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const unavailable = await post(noStorageHost, REVIEW_PATH, { sessionId: "s0", action: "read", kind: "commit", base: head, head });
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.error.code, "UNAVAILABLE");
+    const badAction = await post(noStorageHost, REVIEW_PATH, { action: "explode", kind: "commit", base: head, head });
+    assert.equal(badAction.error.code, "BAD_REQUEST", "validation wins over storage availability");
+  } finally {
+    noStorageHost.dispose();
+  }
+
+  const storage = createFakeStorageDomain();
+  const host = createHost({ config: undefined, defaultDirectory: dir, storageDomain: storage.service });
+  try {
+    assert.equal((await post(host, REVIEW_PATH, { action: "read", kind: "review", base: head, head })).error.code, "BAD_REQUEST");
+    assert.equal((await post(host, REVIEW_PATH, { action: "read", kind: "commit", base: "-x", head: "-x" })).error.code, "BAD_REQUEST");
+    assert.equal((await post(host, REVIEW_PATH, { action: "read", kind: "commit", base: "HEAD", head })).error.code, "BAD_REQUEST");
+    assert.equal((await post(host, REVIEW_PATH, { action: "toggle", kind: "commit", base: head, head })).error.code, "BAD_REQUEST");
+    assert.equal((await post(host, REVIEW_PATH, { action: "toggle", kind: "commit", base: head, head, file: "-x" })).error.code, "BAD_REQUEST");
+    assert.equal((await post(host, REVIEW_PATH, { action: "read", kind: "commit" })).error.code, "BAD_REQUEST");
+    const read = await post(host, REVIEW_PATH, { action: "read", kind: "commit", base: head, head });
+    assert.equal(read.value.total, 1);
+  } finally {
+    host.dispose();
+  }
+});
+
+test("git_graph still exposes only five read-only actions after wave 6", async () => {
+  const tool = host.tools[0];
+  assert.deepEqual(tool.parameters.properties.action.enum, ["log", "show", "diff", "branches", "status"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["action", "commit", "file", "limit"]);
+  const exec = { agent: { session: { header: { cwd: fixture.repo } } } };
+  await assert.rejects(tool.execute({ action: "review" }, exec), /unknown git_graph action/);
+  await assert.rejects(tool.execute({ action: "repos" }, exec), /unknown git_graph action/);
+  const log = await tool.execute({ action: "log", limit: 2 }, exec);
+  assert.equal(log.action, "log");
 });

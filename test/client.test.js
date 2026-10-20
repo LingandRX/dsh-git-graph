@@ -191,6 +191,13 @@ const CONTRACT_KEYS = [
   "detail.signatureExpired",
   "detail.signatureRevoked",
   "detail.signer",
+  "repo.label",
+  "repo.current",
+  "review.progress",
+  "review.markAll",
+  "review.clear",
+  "review.toggle",
+  "review.failed",
   "common.refresh",
   "common.close",
 ];
@@ -293,7 +300,9 @@ function loadInternals() {
         "insertMenuItems, stashIndex, commitHasChildren, outputLines, ACTION_CHECKS, RESET_MODES, " +
         "TagDetails, RemotesPanel, UncommittedView, DetailView, presentationOf, laneColor, richTextParts, " +
         "signatureBadge, containsSummary, tooltipPosition, createLruCache, isTypingTarget, shortcutFor, " +
-        "fileRowKey, RichText, SignatureBadge, CommitTooltip, RepoLabel }",
+        "fileRowKey, RichText, SignatureBadge, CommitTooltip, RepoLabel, repoOptions, withRepoPath, " +
+        "reviewKey, reviewRequest, reviewStateOf, toggleReviewFile, unreviewedPaths, isUnavailableError, " +
+        "ReviewBar, ReviewCheckbox, FileRow, CompareView, Toolbar }",
     ),
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
@@ -2499,4 +2508,255 @@ test("CommitList wires the HEAD scroll target, hover callbacks and presentation"
   assert.equal(headRow.props.presentation.graphStyle, "angular");
   assert.equal(typeof rows[0].props.onHoverStart, "function");
   assert.equal(typeof rows[0].props.onHoverEnd, "function");
+});
+
+// ── wave 6: repository selection ────────────────────────────────────────────
+
+test("repoOptions normalizes repository discovery", () => {
+  const { repoOptions } = loadInternals();
+  const info = repoOptions({
+    workspacePath: "/ws",
+    maxDepth: 2,
+    truncated: true,
+    repos: [
+      { path: "/ws/a", name: "a", isCurrent: true },
+      { path: "/ws/b", name: "", isCurrent: false },
+      { path: "", name: "ignored" },
+      null,
+    ],
+  });
+  assert.equal(info.workspacePath, "/ws");
+  assert.equal(info.multiple, true);
+  assert.equal(info.truncated, true);
+  assert.equal(info.repos.length, 2);
+  assert.equal(info.repos[1].name, "b", "a missing name falls back to the basename");
+  assert.deepEqual(plain(repoOptions(null)), { workspacePath: "", repos: [], multiple: false, truncated: false });
+  assert.equal(repoOptions({ repos: [{ path: "/one" }] }).multiple, false);
+});
+
+test("withRepoPath adds the selected path without mutating the body", () => {
+  const { withRepoPath } = loadInternals();
+  const body = { sessionId: "s1" };
+  assert.equal(withRepoPath(body, ""), body, "no selection keeps the body identity");
+  assert.deepEqual(plain(withRepoPath(body, "/ws/a")), { sessionId: "s1", path: "/ws/a" });
+  assert.deepEqual(plain(body), { sessionId: "s1" }, "the input is not mutated");
+});
+
+test("requests carry the repository path only when one is selected", () => {
+  const { graphRequest, diffRequest, diffCacheKey, compareRequest } = loadInternals();
+  assert.deepEqual(plain(graphRequest({ sessionId: "s1", limit: 120 })), { sessionId: "s1", limit: 120 });
+  assert.deepEqual(plain(graphRequest({ sessionId: "s1", limit: 120, path: "/ws/a" })), { sessionId: "s1", limit: 120, path: "/ws/a" });
+  assert.equal(diffRequest({ sessionId: "s1", scope: "commit", hash: "h1", file: "a.js" }).path, undefined);
+  assert.equal(diffRequest({ sessionId: "s1", scope: "commit", hash: "h1", file: "a.js", path: "/ws/a" }).path, "/ws/a");
+  assert.equal(diffCacheKey({ sessionId: "s1", scope: "commit", hash: "h1", file: "a.js", path: "/ws/a" }), "commit|h1|a.js|@/ws/a");
+  assert.equal(diffCacheKey({ sessionId: "s1", scope: "commit", hash: "h1", file: "a.js" }), "commit|h1|a.js|");
+  assert.deepEqual(plain(compareRequest({ sessionId: "s1", base: "b", head: "h", path: "/ws/a" })), { sessionId: "s1", base: "b", head: "h", path: "/ws/a" });
+});
+
+test("RepoLabel becomes a select when more than one repository is discovered", () => {
+  const { RepoLabel, repoOptions } = loadInternals();
+  const repositories = repoOptions({
+    workspacePath: "/ws",
+    repos: [
+      { path: "/ws/a", name: "a", isCurrent: true },
+      { path: "/ws/b", name: "b", isCurrent: false },
+    ],
+  });
+  const picked = [];
+  const tree = RepoLabel({
+    t: (key) => key,
+    repoLabel: "repo",
+    repoPath: "/ws/a",
+    repositories,
+    value: "/ws/b",
+    onChange: (path) => picked.push(path),
+  });
+  assert.equal(tree.type, "select");
+  assert.equal(tree.props.value, "/ws/b");
+  assert.equal(tree.props["aria-label"], "repo.label");
+  const options = tree.children.flat();
+  assert.equal(options.length, 3, "the session default plus both repositories");
+  assert.equal(options[0].props.value, "");
+  assert.equal(options[1].props.value, "/ws/a");
+  assert.deepEqual(options[1].children, ["a (repo.current)"]);
+  tree.props.onChange({ target: { value: "/ws/b" } });
+  assert.deepEqual(picked, ["/ws/b"]);
+
+  // One repository (or a failed discovery) keeps the plain label.
+  const single = RepoLabel({ t: (key) => key, repoLabel: "repo", repoPath: "/ws", repositories: repoOptions({ repos: [{ path: "/ws", name: "ws" }] }) });
+  assert.equal(single.type, "span");
+  assert.deepEqual(single.children, ["repo"]);
+  assert.equal(RepoLabel({ t: (key) => key, repoLabel: "repo", repositories: null }).type, "span");
+});
+
+// ── wave 6: review marks ────────────────────────────────────────────────────
+
+test("reviewRequest builds read, toggle and clear bodies", () => {
+  const { reviewRequest } = loadInternals();
+  assert.deepEqual(plain(reviewRequest({ sessionId: "s1", action: "read", kind: "commit", base: "h", head: "h" })), {
+    sessionId: "s1", action: "read", kind: "commit", base: "h", head: "h",
+  });
+  assert.deepEqual(plain(reviewRequest({ sessionId: "s1", action: "toggle", kind: "compare", base: "b", head: "h", file: "a.js" })), {
+    sessionId: "s1", action: "toggle", kind: "compare", base: "b", head: "h", file: "a.js",
+  });
+  assert.equal(reviewRequest({ sessionId: "s1", action: "clear", kind: "commit", base: "h", head: "h" }).file, undefined);
+  assert.equal(reviewRequest({ sessionId: "s1", action: "bogus" }).action, "read", "an unknown action falls back to read");
+  assert.equal(reviewRequest({ sessionId: "s1", kind: "bogus" }).kind, "commit");
+});
+
+test("reviewStateOf and toggleReviewFile keep the host total authoritative", () => {
+  const { reviewStateOf, toggleReviewFile, unreviewedPaths, isUnavailableError } = loadInternals();
+  const state = reviewStateOf({ files: { "a.js": 12, "": 4, "b.js": "x" }, total: 8, reviewed: 2 });
+  assert.deepEqual(plain(Object.keys(state.files)), ["a.js", "b.js"]);
+  assert.equal(state.files["a.js"], 12);
+  assert.equal(state.files["b.js"], 0);
+  assert.equal(state.total, 8);
+  assert.equal(state.reviewed, 2);
+
+  const added = toggleReviewFile({ files: {}, total: 8, reviewed: 0 }, "a.js", 99);
+  assert.deepEqual(plain(Object.keys(added.files)), ["a.js"]);
+  assert.equal(added.files["a.js"], 99);
+  assert.equal(added.reviewed, 1);
+  assert.equal(added.total, 8);
+  const removed = toggleReviewFile(added, "a.js", 100);
+  assert.equal(removed.reviewed, 0);
+  assert.equal(removed.total, 8);
+
+  assert.deepEqual(plain(unreviewedPaths([{ path: "a.js" }, { path: "b.js" }, null, { path: "a.js" }], { "a.js": 1 })), ["b.js"]);
+  assert.deepEqual(plain(unreviewedPaths(null, null)), []);
+  assert.equal(isUnavailableError({ code: "UNAVAILABLE" }), true);
+  assert.equal(isUnavailableError(new Error("boom")), false);
+  assert.equal(isUnavailableError(null), false);
+});
+
+test("ReviewCheckbox toggles through its change handler", () => {
+  const { ReviewCheckbox } = loadInternals();
+  const toggled = [];
+  const tree = ReviewCheckbox({ t: (key) => key, reviewed: true, path: "a.js", onToggle: (path) => toggled.push(path) });
+  const input = collectElements(tree).find((element) => element.props.type === "checkbox");
+  assert.equal(input.props.checked, true);
+  assert.equal(input.props["aria-label"], "review.toggle a.js");
+  input.props.onChange();
+  assert.deepEqual(toggled, ["a.js"]);
+  const unchecked = collectElements(ReviewCheckbox({ t: (key) => key, reviewed: false, path: "b.js", onToggle() {} })).find((element) => element.props.type === "checkbox");
+  assert.equal(unchecked.props.checked, false);
+});
+
+test("ReviewBar shows progress and mark-all/clear with correct disabling", () => {
+  const { ReviewBar } = loadInternals();
+  const files = [{ path: "a.js" }, { path: "b.js" }];
+  const marked = [];
+  let cleared = 0;
+  const tree = ReviewBar({
+    t: (key) => key,
+    review: { status: "ready", files: { "a.js": 1 }, total: 2, reviewed: 1 },
+    files,
+    onMarkAll: (list) => marked.push(list),
+    onClearReviews: () => { cleared += 1; },
+  });
+  const elements = collectElements(tree);
+  const progress = elements.find((element) => String(element.props.className || "").includes("dgg-review-progress"));
+  assert.deepEqual(progress.children, ["review.progress"]);
+  const buttons = elements.filter((element) => element.type === "button");
+  assert.deepEqual(Array.from(buttons, (button) => button.children.join("")), ["review.markAll", "review.clear"]);
+  assert.equal(buttons[0].props.disabled, false);
+  assert.equal(buttons[1].props.disabled, false);
+  buttons[0].props.onClick();
+  buttons[1].props.onClick();
+  assert.equal(marked[0], files);
+  assert.equal(cleared, 1);
+
+  const complete = collectElements(ReviewBar({ t: (key) => key, review: { status: "ready", files: { "a.js": 1, "b.js": 2 }, total: 2, reviewed: 2 }, files, onMarkAll() {}, onClearReviews() {} }));
+  const completeButtons = complete.filter((element) => element.type === "button");
+  assert.equal(completeButtons[0].props.disabled, true);
+  const empty = collectElements(ReviewBar({ t: (key) => key, review: { status: "ready", files: {}, total: 2, reviewed: 0 }, files, onMarkAll() {}, onClearReviews() {} }));
+  assert.equal(empty.filter((element) => element.type === "button")[1].props.disabled, true);
+  for (const status of ["loading", "unavailable", "error", "idle"]) {
+    assert.equal(ReviewBar({ t: (key) => key, review: { status }, files, onMarkAll() {}, onClearReviews() {} }), null);
+  }
+  assert.equal(ReviewBar({ t: (key) => key, review: null, files, onMarkAll() {}, onClearReviews() {} }), null);
+});
+
+test("FileRow dims reviewed rows and keeps the review identity separate from diffs", () => {
+  const { FileRow } = loadInternals();
+  const file = { path: "a.js", status: "M", added: 1, removed: 1 };
+  const reviewed = FileRow({ t: (key) => key, sessionId: "s1", hash: "h1", file, cache: { current: new Map() }, reviewed: true });
+  assert.ok(reviewed.props.className.includes("dgg-file-reviewed"));
+  const unreviewed = FileRow({ t: (key) => key, sessionId: "s1", hash: "h1", file, cache: { current: new Map() }, reviewed: false });
+  assert.ok(unreviewed.props.className.includes("dgg-file-reviewable"));
+  const plainRow = FileRow({ t: (key) => key, sessionId: "s1", hash: "h1", file, cache: { current: new Map() } });
+  assert.equal(plainRow.props.className, "dgg-file", "without review state the row is unchanged");
+});
+
+test("DetailView renders the review bar and per-file checkboxes when review is ready", () => {
+  const { DetailView } = loadInternals();
+  const files = [{ path: "src/a.js", status: "M", added: 1, removed: 1 }, { path: "src/b.js", status: "A", added: 2, removed: 0 }];
+  const commit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000,
+    committerName: "Ann", committerEmail: "ann@x", committerTime: 1700000000,
+    subject: "Subject", body: "", refs: [], stats: { files: 2, insertions: 3, deletions: 1 }, files,
+  };
+  const toggled = [];
+  const markAll = [];
+  let cleared = 0;
+  const common = {
+    t: (key) => key, commit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+    presentation: { showSignature: false, showEmoji: false, issueUrlTemplate: "", graphStyle: "rounded", graphColours: [] },
+    repoPath: "/ws/a",
+    review: { status: "ready", files: { "src/a.js": 5 }, total: 2, reviewed: 1 },
+    onToggleReviewed: (path) => toggled.push(path),
+    onMarkAll: (list) => markAll.push(list),
+    onClearReviews: () => { cleared += 1; },
+  };
+  const tree = collectElements(DetailView(common));
+  const bar = tree.find((element) => typeof element.type === "function" && element.type.name === "ReviewBar");
+  assert.ok(bar, "the progress bar is rendered above the file list");
+  const rows = tree.filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(rows.length, 2);
+  const reviewedRow = rows.find((row) => row.props.file.path === "src/a.js");
+  const unreviewedRow = rows.find((row) => row.props.file.path === "src/b.js");
+  assert.equal(reviewedRow.props.reviewed, true);
+  assert.equal(reviewedRow.props.repoPath, "/ws/a");
+  assert.equal(unreviewedRow.props.reviewed, false);
+  const leading = unreviewedRow.props.renderLeading(unreviewedRow.props.file);
+  assert.equal(leading.type.name, "ReviewCheckbox");
+  assert.equal(leading.props.path, "src/b.js");
+  leading.props.onToggle("src/b.js");
+  assert.deepEqual(toggled, ["src/b.js"]);
+  bar.props.onMarkAll(files);
+  bar.props.onClearReviews();
+  assert.equal(markAll[0], files);
+  assert.equal(cleared, 1);
+
+  // UNAVAILABLE hides the control entirely (no bar, no checkboxes).
+  const hidden = collectElements(DetailView({ ...common, review: { status: "unavailable", files: {}, total: 0, reviewed: 0 } }));
+  const hiddenBar = hidden.find((element) => typeof element.type === "function" && element.type.name === "ReviewBar");
+  assert.equal(hiddenBar.type(hiddenBar.props), null, "UNAVAILABLE renders no review control");
+  const hiddenRows = hidden.filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.ok(hiddenRows.every((row) => row.props.renderLeading === undefined));
+});
+
+test("CompareView renders the review bar and checkboxes for a comparison", () => {
+  const { CompareView } = loadInternals();
+  const pair = { base: "b1", head: "h1" };
+  const value = {
+    base: "b1", head: "h1", baseAbbrev: "b1", headAbbrev: "h1",
+    stats: { files: 1, insertions: 1, deletions: 0 },
+    files: [{ path: "src/a.js", status: "M", added: 1, removed: 0 }],
+  };
+  const tree = collectElements(CompareView({
+    t: (key) => key, pair, value, status: "ready", error: null, sessionId: "s1", cache: { current: new Map() },
+    repoPath: "/ws/b",
+    review: { status: "ready", files: {}, total: 1, reviewed: 0 },
+    onToggleReviewed() {}, onMarkAll() {}, onClearReviews() {},
+    onSwap() {}, onExit() {}, onRetry() {},
+  }));
+  assert.ok(tree.some((element) => typeof element.type === "function" && element.type.name === "ReviewBar"));
+  const row = tree.find((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(row.props.reviewed, false);
+  assert.equal(row.props.repoPath, "/ws/b");
+  assert.equal(typeof row.props.renderLeading, "function");
 });

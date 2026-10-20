@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **164** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **183** 个用例全绿）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -215,7 +215,7 @@
 
 ## 阶段 5：工程化周边
 
-### [ ] TODO-18 多仓库支持（P1）
+### [x] TODO-18 多仓库支持（P1）
 
 - **目标**：会话工作区内发现多个仓库并可切换（对齐 C1）。
 - **文件**：`lib/git.js`（`discoverRepos(root, maxDepth)`）、`lib/index.js`（`graph` 请求携带 `repoPath` 绝对路径并做**白名单校验**：必须位于 workspace 内）、`lib/client.js`（仓库下拉）、`cordis.patch.yml`（`maxDepthOfRepoSearch`）。
@@ -223,12 +223,21 @@
   - 工作区含子仓库时下拉可切换，选择项在刷新后保持；
   - 请求外部路径被拒绝（`BAD_REQUEST`），补 host 安全用例 2（`..` 逃逸、符号链接逃逸）；
   - 单仓库场景不显示下拉。
+- **完成**（2026-10-21）：host `POST /repos`（深度受限遍历、跳过 node_modules/.git/dist/build、
+  不进入已发现仓库、2000 目录/50 仓库上限 + `truncated`）+ **统一路径围栏**：`resolveCwd` 用
+  `fs.realpath` 校验路径必须落在会话工作区内，否则 `OUTSIDE_WORKSPACE`（`..` 与符号链接逃逸都被拒；
+  `repoPath` 配置为文档化豁免）。client 在发现 >1 仓库时把仓库名变成下拉，选择后所有请求带 `path`。
 
-### [ ] TODO-19 代码评审标记（P2）
+### [x] TODO-19 代码评审标记（P2）
 
 - **目标**：记录"已评审文件"，跨会话保留、90 天过期（对齐 C2）。
 - **文件**：`lib/index.js`（用 DSH `storageDomain` 持久化，键 `session → { commit, files: [{path, reviewedAt}] }`）、`lib/client.js`（文件行勾选、未评审加粗、进度 `3/8`）。
 - **验收**：勾选状态重开标签页仍在；`git_graph` 工具保持只读（不得写入评审状态）；过期清理有单测。
+- **完成**（2026-10-21）：host 用 `storageDomain`（领域 `dsh_git_graph`，集合 `reviews`，按会话 id 键控）
+  持久化，90 天过期 + 每会话 200 条上限；`POST /review` 提供 read/toggle/clear，`total` 取自
+  `readCommit`/`compareCommits` 为权威分母；无 `storageDomain` 时返回 `UNAVAILABLE` 而不抛错。
+  client 在详情与对比视图给每个文件加评审勾选（未评审加粗、已评审变淡）、进度行与全标/清除，
+  乐观更新失败回滚，且不触发任何 diff 请求。
 
 ### [x] TODO-20 视觉与设置面（P2）
 
