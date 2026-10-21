@@ -404,7 +404,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, " +
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
@@ -437,6 +437,16 @@ function collectElements(node) {
   };
   visit(node);
   return found;
+}
+
+/**
+ * Visible text of one ref chip (the label span, not the icon).
+ * @param element - a chip element produced by RefChips.
+ * @returns the label text.
+ */
+function chipLabelText(element) {
+  const label = collectElements(element).find((child) => String(child.props.className || "").split(" ").includes("dgg-chip-label"));
+  return label === undefined ? element.children.join("") : label.children.join("");
 }
 
 /**
@@ -833,18 +843,48 @@ test("classifyRefs keeps a branch at HEAD actionable", () => {
   const buttons = elements.filter((element) => element.type === "button");
   const spans = elements.filter((element) => element.type === "span" && "title" in element.props);
   assert.equal(buttons.length, 1, "only the branch chip should be actionable");
-  assert.equal(buttons[0].children.join(""), "main");
+  assert.equal(chipLabelText(buttons[0]), "main");
   assert.match(buttons[0].props.className, /dgg-chip-branch/);
   assert.match(buttons[0].props.className, /dgg-chip-head/, "the current branch keeps the head accent");
   assert.equal(buttons[0].props.title, "action.checkoutBranch: main");
   assert.equal(spans.length, 1, "HEAD must remain a non-actionable chip");
-  assert.equal(spans[0].children.join(""), "HEAD");
+  assert.equal(chipLabelText(spans[0]), "HEAD");
   assert.match(spans[0].props.className, /dgg-chip-head/);
 
   // Without a pick handler (the master list) both chips are inert spans.
   const inert = collectElements(RefChips({ chips, t: (key) => key }));
   assert.equal(inert.filter((element) => element.type === "button").length, 0);
   assert.equal(inert.filter((element) => element.type === "span" && "title" in element.props).length, 2);
+});
+
+test("ref chips carry a coloured type icon (lane colour, per-name fallback)", () => {
+  const { RefChips, refColourIndex } = loadInternals();
+  const chips = [
+    { key: "b", label: "main", kind: "branch", isHead: true },
+    { key: "r", label: "origin/main", kind: "remote", isHead: false },
+    { key: "t", label: "v1.0", kind: "tag", isHead: false },
+    { key: "s", label: "stash@{0}", kind: "stash", isHead: false },
+  ];
+  const palette = ["#111111", "#222222", "#333333"];
+  const tree = collectElements(RefChips({ chips, t: (key) => key, colourIndex: 2, colours: palette }));
+  const icons = tree.filter((element) => String(element.props.className || "").split(" ").includes("dgg-chip-icon"));
+  assert.equal(icons.length, 4, "every chip gets an icon square");
+  for (const icon of icons) assert.deepEqual(plain(icon.props.style), { background: palette[2] }, "list chips use the row's lane colour");
+  // The glyph differs per kind: branch/remote share the branch glyph (5 shapes),
+  // tag and stash have their own (2 and 3).
+  assert.deepEqual(icons.map((icon) => icon.children[0].children[0].length), [5, 5, 2, 3]);
+  const headChip = tree.find((element) => String(element.props.className || "").includes("dgg-chip-head"));
+  assert.equal(headChip.props.style.borderColor, palette[2], "the HEAD chip borrows the lane colour for its border");
+  // Without a lane (details pane) the colour is a stable per-name palette index.
+  const named = collectElements(RefChips({ chips, t: (key) => key, colours: palette }));
+  const namedIcons = named.filter((element) => String(element.props.className || "").split(" ").includes("dgg-chip-icon"));
+  assert.deepEqual(namedIcons.map((icon) => icon.props.style.background), chips.map((chip) => palette[refColourIndex(chip.label, palette.length)]));
+  assert.equal(refColourIndex("main", 3), refColourIndex("main", 3), "the index is stable");
+  assert.notEqual(refColourIndex("main", 12), refColourIndex("origin/main", 12), "different names usually land elsewhere");
+  // The label span keeps the readable text while the icon is aria-hidden.
+  const firstChip = tree[0].children[0];
+  assert.equal(chipLabelText(firstChip), "main");
+  assert.equal(icons[0].props["aria-hidden"], "true");
 });
 
 test("classifyRefs keeps HEAD -> branch and bare HEAD decorations as head chips", () => {
@@ -1518,7 +1558,7 @@ test("RefChips opens ref menus from buttons and from row spans", () => {
   );
   const buttons = detail.filter((element) => element.type === "button");
   assert.equal(buttons.length, 3, "branch, tag and remote chips are buttons; HEAD is not");
-  assert.equal(buttons[0].children.join(""), "main");
+  assert.equal(chipLabelText(buttons[0]), "main");
   assert.equal(buttons[0].props["aria-haspopup"], "menu");
   buttons[0].props.onClick({ stopPropagation() {} });
   assert.deepEqual(picked, ["main"], "a branch chip click is still checkout");
@@ -1537,7 +1577,7 @@ test("RefChips opens ref menus from buttons and from row spans", () => {
   assert.equal(row.filter((element) => element.type === "button").length, 0, "rows never nest buttons");
   const spans = row.filter((element) => element.type === "span" && typeof element.props.className === "string" && element.props.className.startsWith("dgg-chip "));
   assert.equal(spans.length, 4);
-  const tagSpan = spans.find((element) => element.children.join("") === "v1.0");
+  const tagSpan = spans.find((element) => chipLabelText(element) === "v1.0");
   tagSpan.props.onContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 7, clientY: 8 });
   assert.deepEqual({ x: menus.at(-1).point.x, y: menus.at(-1).point.y }, { x: 7, y: 8 });
   // Row chips are keyboard reachable too: Shift+F10/Enter open the same menu.
@@ -1548,7 +1588,7 @@ test("RefChips opens ref menus from buttons and from row spans", () => {
   assert.deepEqual({ x: menus.at(-1).point.x, y: menus.at(-1).point.y }, { x: 2, y: 16 });
   tagSpan.props.onKeyDown({ key: "Enter", preventDefault() {}, stopPropagation() {}, currentTarget: { getBoundingClientRect: () => ({ left: 3, top: 5, bottom: 17 }) } });
   assert.equal(menus.at(-1).label, "v1.0");
-  const headSpan = spans.find((element) => element.children.join("") === "HEAD");
+  const headSpan = spans.find((element) => chipLabelText(element) === "HEAD");
   assert.equal(headSpan.props.onContextMenu, undefined, "the HEAD badge has no menu");
   assert.equal(headSpan.props.onKeyDown, undefined);
   assert.equal(headSpan.props.tabIndex, undefined);
