@@ -4981,7 +4981,7 @@ test("column width helpers clamp, resize, reset and serialize", () => {
     clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars,
     normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths,
   } = loadInternals();
-  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 140, author: 100, commit: 76 });
+  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 140, author: 88, commit: 76 });
   assert.deepEqual(plain(COLUMN_WIDTH_RANGES), { date: [48, 200], author: [64, 260], commit: [64, 220] });
   assert.equal(COLUMN_WIDTH_STORAGE_KEY, "dsh-git-graph:column-widths:v1");
 
@@ -4996,12 +4996,12 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.equal(clampColumnWidth("bogus", 100), 0);
   assert.equal(clampColumnWidth("date", Number.NaN), 140, "invalid px falls back to the default");
 
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 190, author: 100, commit: 76 });
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 140, author: 100, commit: 64 }, "clamped low");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 190, author: 88, commit: 76 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 140, author: 88, commit: 64 }, "clamped low");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 140, author: 260, commit: 76 }, "clamped high");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "bogus", 50)), plain(COLUMN_WIDTH_DEFAULTS));
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", Number.NaN)), plain(COLUMN_WIDTH_DEFAULTS));
-  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 100, commit: 100 });
+  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 88, commit: 100 });
   assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 76 });
   const { graphWidthVar } = loadInternals();
   assert.deepEqual(plain(graphWidthVar(1)), { "--dgg-graph-w": "40px" });
@@ -5043,24 +5043,24 @@ test("data columns are dropped from the right until the description fits", () =>
   const { fittingColumns, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING } = loadInternals();
   assert.deepEqual({ DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING }, { DESC_MIN_WIDTH: 150, DATE_COMPACT_WIDTH: 124, ROW_HORIZONTAL_PADDING: 20 });
   const all = { author: true, date: true, hash: true };
-  const widths = { date: 140, author: 100, commit: 76 };
+  const widths = { date: 140, author: 88, commit: 76 };
   const graph = 40;
   // Unknown width keeps every column (first paint, tests, SSR).
   assert.deepEqual(plain(fittingColumns(all, 0, widths, graph)), all);
   assert.deepEqual(plain(fittingColumns(all, undefined, widths, graph)), all);
-  // All five columns need 40 + 20 + 150 + 316 = 526px.
-  assert.deepEqual(plain(fittingColumns(all, 526, widths, graph)), all);
-  assert.deepEqual(plain(fittingColumns(all, 525, widths, graph)), { author: true, date: true, hash: false }, "commit goes first");
-  // Date + author need 40 + 20 + 150 + 240 = 450px.
-  assert.deepEqual(plain(fittingColumns(all, 450, widths, graph)), { author: true, date: true, hash: false });
-  assert.deepEqual(plain(fittingColumns(all, 449, widths, graph)), { author: false, date: true, hash: false }, "then the author");
+  // All five columns need 40 + 20 + 150 + 304 = 514px.
+  assert.deepEqual(plain(fittingColumns(all, 514, widths, graph)), all);
+  assert.deepEqual(plain(fittingColumns(all, 513, widths, graph)), { author: true, date: true, hash: false }, "commit goes first");
+  // Date + author need 40 + 20 + 150 + 228 = 438px.
+  assert.deepEqual(plain(fittingColumns(all, 438, widths, graph)), { author: true, date: true, hash: false });
+  assert.deepEqual(plain(fittingColumns(all, 437, widths, graph)), { author: false, date: true, hash: false }, "then the author");
   // The compact date fits down to 40 + 20 + 150 + 124 = 334px.
   assert.deepEqual(plain(fittingColumns(all, 334, widths, graph)), { author: false, date: true, hash: false });
   assert.deepEqual(plain(fittingColumns(all, 333, widths, graph)), { author: false, date: false, hash: false }, "below that only graph + description remain");
   assert.deepEqual(plain(fittingColumns(all, 900, widths, graph)), all);
   // The actual (dragged) widths and the graph width matter, not fixed thresholds.
-  assert.deepEqual(plain(fittingColumns(all, 526, { date: 200, author: 100, commit: 76 }, graph)), { author: true, date: true, hash: false }, "a wide date column hides the commit earlier");
-  assert.deepEqual(plain(fittingColumns(all, 526, widths, 60)), { author: true, date: true, hash: false }, "more lanes hide the commit earlier");
+  assert.deepEqual(plain(fittingColumns(all, 514, { date: 200, author: 88, commit: 76 }, graph)), { author: true, date: true, hash: false }, "a wide date column hides the commit earlier");
+  assert.deepEqual(plain(fittingColumns(all, 514, widths, 60)), { author: true, date: true, hash: false }, "more lanes hide the commit earlier");
   // The user's own toggles still win.
   assert.deepEqual(plain(fittingColumns({ author: false, date: true, hash: true }, 900, widths, graph)), { author: false, date: true, hash: true });
   assert.deepEqual(plain(fittingColumns({ author: true, date: true, hash: false }, 450, widths, graph)), { author: true, date: true, hash: false });
