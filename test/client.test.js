@@ -404,7 +404,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, responsiveColumns, AUTHOR_HIDE_BELOW, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, responsiveColumns, AUTHOR_HIDE_BELOW, DATA_COLUMNS_HIDE_BELOW, " +
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
@@ -5039,22 +5039,30 @@ test("column width helpers clamp, resize, reset and serialize", () => {
 });
 
 test("narrow panes hide the Author column instead of squeezing it", () => {
-  const { responsiveColumns, AUTHOR_HIDE_BELOW } = loadInternals();
+  const { responsiveColumns, AUTHOR_HIDE_BELOW, DATA_COLUMNS_HIDE_BELOW } = loadInternals();
   assert.equal(AUTHOR_HIDE_BELOW, 400);
   const all = { author: true, date: true, hash: true };
   // Unknown width (first paint, tests, SSR) keeps every column.
   assert.deepEqual(plain(responsiveColumns(all, 0)), all);
   assert.deepEqual(plain(responsiveColumns(all, undefined)), all);
-  assert.deepEqual(plain(responsiveColumns(all, 399)), { author: false, date: true, hash: true }, "below the threshold the author column goes away");
+  assert.deepEqual(plain(responsiveColumns(all, 399)), { author: false, date: true, hash: true }, "just below 400 the author column goes away");
   assert.deepEqual(plain(responsiveColumns(all, AUTHOR_HIDE_BELOW)), all, "the threshold itself still shows the column");
   assert.deepEqual(plain(responsiveColumns(all, 900)), all);
+  // A second stage drops every data column, leaving graph + description.
+  assert.equal(DATA_COLUMNS_HIDE_BELOW, 340);
+  assert.deepEqual(plain(responsiveColumns(all, DATA_COLUMNS_HIDE_BELOW)), { author: false, date: true, hash: true });
+  assert.deepEqual(plain(responsiveColumns(all, DATA_COLUMNS_HIDE_BELOW - 1)), { author: false, date: false, hash: false }, "below 340 only graph + description remain");
+  assert.deepEqual(plain(responsiveColumns(all, 300)), { author: false, date: false, hash: false });
+  assert.deepEqual(plain(responsiveColumns({ author: false, date: false, hash: false }, 900)), { author: false, date: false, hash: false }, "explicit toggles still win");
   // The user's own toggle wins in both directions.
   assert.deepEqual(plain(responsiveColumns({ author: false, date: true, hash: true }, 900)), { author: false, date: true, hash: true });
   assert.deepEqual(plain(responsiveColumns({ author: true, date: false, hash: false }, 300)), { author: false, date: false, hash: false });
+  assert.deepEqual(plain(responsiveColumns({ author: true, date: true, hash: true }, 500)), { author: true, date: true, hash: true });
   const input = { author: true, date: true, hash: true };
   const output = responsiveColumns(input, 300);
   assert.notEqual(output, input, "a new object is returned");
-  assert.deepEqual(plain(responsiveColumns(null, 300)), { author: false, date: true, hash: true }, "missing columns fall back to the defaults");
+  assert.deepEqual(plain(responsiveColumns(null, 300)), { author: false, date: false, hash: false }, "missing columns fall back to defaults and still follow the width");
+  assert.deepEqual(plain(responsiveColumns(null, 900)), { author: true, date: true, hash: true });
   // ResizeObserver wiring: the pane width feeds the header and both lists.
   assert.match(SOURCE, /const Observer = typeof ResizeObserver === "function" \? ResizeObserver : null;/);
   assert.match(SOURCE, /const visibleColumns = responsiveColumns\(columns, paneWidth\);/);
