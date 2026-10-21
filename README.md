@@ -16,8 +16,9 @@ targets the DSH Web UI and the Harness plugin model.
 - **Commit graph**: colored lanes (rounded or angular), merge/octopus commits, branch/remote/tag
   and stash chips, HEAD marker, dirty indicator, hover tooltips (containment + which refs),
   in-page find, **full-history search** (`POST /search`, paginated, scan-limit notice), branch
-  filtering with **glob patterns** (`*`, `**`, `?`, `[abc]`, `!` negation), column visibility,
-  sort order, configurable date type/format, muted merge/non-ancestor rows, auto-load pagination.
+  filtering with **glob patterns** (`*`, `**`, `?`, `[abc]`, `!` negation), column visibility and
+  **draggable column widths** (persisted), sort order, configurable date type/format, optional
+  Gravatar avatars, muted merge/non-ancestor rows, auto-load pagination.
 - **Commit details**: author/committer, timestamps, parents, refs, signature status, stats,
   changed files (flat or tree view) with per-file review checkboxes, review progress, and
   expandable unified diffs.
@@ -31,6 +32,15 @@ targets the DSH Web UI and the Harness plugin model.
   local branch, fetch, push to multiple remotes, cherry-pick, revert, merge, rebase onto, drop
   and reset to commits, create/delete/push tags with annotated tag details, the full stash
   family, and remote add/edit/delete/prune.
+- **Archive export**: any commit/branch/tag can be exported as `zip`/`tar.gz` into
+  `<workspace>/.dsh-git-graph/archives/` (path-fenced, unique names, relative path returned).
+- **Pull-request creation**: reads the `origin` (or first) remote and opens the platform's
+  compare / merge-request / pull-request URL — GitHub, GitLab (subgroups), Bitbucket, or a
+  custom `$1..$8` template provider.
+- **Review management**: review marks are stored per repository; a management panel lists every
+  stored review across sessions/workspaces and ends one or all of them.
+- **Repository config**: export the effective non-default settings to `<repo>/.gitgraph.json`,
+  commit it, and every session opening that repository picks it up (import/clear in-panel).
 - **Multiple repositories**: discovered under the workspace, switchable from the toolbar, with
   every path fenced to the workspace (`OUTSIDE_WORKSPACE` otherwise).
 - **Presentation**: rounded/angular graph style, custom lane colours, emoji shortcodes (plus
@@ -62,13 +72,17 @@ without the `git-graph.` prefix (for example `repository.commits.initialLoad`, `
 accepted, and conflicts resolve in favour of the canonical key.
 
 - [docs/settings-parity.md](docs/settings-parity.md) is the per-key disposition table:
-  **71 mapped** (real behaviour here), **10 vscode-only**, **29 out-of-scope** (each with a
-  reason), plus the 29-key presentation payload the client receives.
+  **74 mapped** (real behaviour here), **10 vscode-only**, **26 out-of-scope** (each with a
+  reason), plus the 30-key presentation payload the client receives.
 - Host-level keys: `repoPath` (pin the repository; empty = session workspace) and `maxCommits`
   (caps the default graph page).
 - DSH extensions on top of the upstream keys: `showEmoji`, `issueUrlTemplate`,
   `globalShortcuts`; DSH compat spellings `showSignature` / `showRemoteBranches` /
   `showStashes` fold into their canonical keys.
+- Per repository: `<repo>/.gitgraph.json` (written by 仓库配置 → 导出) overrides the plugin
+  config for sessions opening that repository; import/clear live in the same panel.
+- `repository.commits.fetchAvatars` is opt-in: with it on, the host adds Gravatar URLs and the
+  browser fetches the images; with it off nothing is requested.
 
 **Defaults that changed with the upstream alignment:** `fetch` no longer prunes implicitly
 (`repository.fetchAndPrune` / `fetchAndPruneTags` are opt-in, as upstream); the default graph
@@ -88,27 +102,28 @@ is the upstream 12-colour list.
 | `lib/settings.js` | 110-key upstream settings surface, alias folding, presentation payload |
 | `docs/parity.md` | Migration report vs vscode-git-graph v1.30.0: what landed, what did not, and the evidence used |
 | `docs/settings-parity.md` | Per-key disposition table for all 110 upstream settings |
-| `docs/todolist.md` | Actionable backlog (26 items) with file scope and acceptance criteria per item |
-| `docs/wave8-contract.md` | Contract for the wave that closed the last five gaps (search, working-tree compare, settings, client staging) |
+| `docs/todolist.md` | Actionable backlog (32 items) with file scope and acceptance criteria per item |
+| `docs/wave8-contract.md` | Contract for the wave that closed the five residual gaps (search, working-tree compare, settings, client staging) |
+| `docs/wave9-contract.md` | Contract for the wave that migrated the six former non-goals (column widths, archive, avatars, PR creation, review management, repo config) |
 
 ## Migration status
 
-**Complete at the capability level, and the last five residual differences are closed**
-(wave 8): server-side full-history search, custom branch globs, working-tree-vs-commit
-comparison, configurable/global shortcuts, and per-key disposition of all 110 upstream
-settings. What remains is only the six explicitly declared non-goals in
-[docs/parity.md §5.2](docs/parity.md) (column-width drag, `git archive`, avatars, PR-creation
-integrations, cross-workspace batch review, repo-config import/export).
+**Feature-complete.** Wave 8 closed the five residual gaps and wave 9 migrated the six
+previously declared non-goals (column widths, `git archive`, avatars, PR creation, review
+management, repository config). There are **no feature-level non-goals left**; the only
+remaining differences are at the settings-key level — 10 VS Code-only keys and 26 keys with an
+explicit out-of-scope reason in [docs/settings-parity.md](docs/settings-parity.md).
 
-- [docs/parity.md](docs/parity.md) — evidence-backed gap report; §5.1 lists what wave 8 closed.
-- [docs/todolist.md](docs/todolist.md) — 26 items, all `[x]`, no open sub-items.
+- [docs/parity.md](docs/parity.md) — evidence-backed report; §5.1/§5.2 list what waves 8 and 9
+  closed, §5.3 the settings-level remainder.
+- [docs/todolist.md](docs/todolist.md) — 32 items, all `[x]`, no open sub-items.
 
-Verification: `node --test` → **303/303** (host 102, client 155, settings 46), real-repository
-probes for search/compare/settings behaviour, and a cross-end check that feeds the client's
-actual request bodies through the registered host routes (14/14). Not verified in this
-workspace: pixel-level layout and live click/hover behaviour in the browser (no browser
-control in the session), and GPG-signed commits (no `gpg` available — only the unsigned `N`
-path was exercised).
+Verification: `node --test` → **330/330** (host 113, client 169, settings 48); real-repository
+probes for archive/avatar/PR/review/repo-config behaviour (32/32) and a cross-end check that
+feeds the client's actual request bodies through the registered host routes. Not verified in
+this workspace: pixel-level layout, real drag/pointer gestures and live popup behaviour in the
+browser (no browser control in the session), and GPG-signed commits (no `gpg` available — only
+the unsigned `N` path was exercised).
 
 ## Notes
 

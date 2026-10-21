@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **303** 个用例全绿，只增不减）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **330** 个用例全绿，只增不减）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -269,12 +269,12 @@
 
 ## 第 7 波补充（收尾 parity 残余交互）
 
-- [x] 列显隐（A6 的可做部分；列宽拖拽声明为非目标）
+- [x] 列显隐（A6 的可做部分；列宽拖拽在 wave 9 已迁移，见 TODO-27）
 - [x] 文件树视图 + 紧凑文件夹（A8）
 - [x] 剩余标签页快捷键：S / Shift+S 跳 stash、上下键移动详情（A9）
 - [x] `pushToMultipleRemotes`（parity「远端」行）
 - 说明：`git archive`、服务端全量搜索、工作区改动与指定提交对比、glob 过滤、头像、PR 集成等
-  已在 `docs/parity.md` 第五节显式声明为非目标/残余，并写明理由。
+  已在 `docs/parity.md` 第五节显式声明为残余，其中 5 项在 wave 8、6 项功能级非目标在 wave 9 已全部迁移。
 
 ## Wave 8：消除第五节残余（2026-10-21）
 
@@ -313,7 +313,7 @@
 ### [x] TODO-26 上游 110 项设置逐项对齐
 
 - `lib/settings.js`：110 键（81 canonical + 29 别名）、别名折叠（canonical 优先）、类型强制、非法/未知上报、
-  `parseShortcut`、29 键 presentation；`SETTINGS` 每项带 `wiring`（mapped/vscode-only/out-of-scope）与理由。
+  `parseShortcut`、30 键 presentation；`SETTINGS` 每项带 `wiring`（mapped/vscode-only/out-of-scope）与理由。
 - host 接线：排序/初始页大小、标签/远端/远端 HEAD/stash 可见性、`--first-parent`、`--reflog`、mailmap、
   未跟踪可见性、`fetch --prune`/`--prune-tags`（默认关闭，与上游一致）。
 - client 消费：日期类型/格式、列显隐、文件视图/紧凑目录、自动居中、引用标签对齐/合并、弱化行、自定义 emoji、
@@ -321,16 +321,55 @@
 - 逐键处置表：[`settings-parity.md`](./settings-parity.md)。
 - 验收：键数/别名目标/折叠/强制/上报/presentation/快捷键/docs 一致性测试；host 每项设置的默认值+覆盖+非法回退用例。
 
-## 非目标（明确不做）
+## Wave 9：迁移原「非目标」6 项（2026-10-21）
+
+> 来源：`docs/parity.md` 原 §5.2 的 6 项非目标。契约见 [`wave9-contract.md`](./wave9-contract.md)。
+
+### [x] TODO-27 列宽拖拽
+
+- 表头 Date/Author/Commit 拖拽句柄（pointer capture、`touch-action:none`）、clamp 区间、双击重置、
+  `localStorage` 持久化；`--dgg-col-*` CSS 变量驱动表头与行，列显隐仍可用。
+
+### [x] TODO-28 `git archive` 导出
+
+- `POST /archive`：`git archive --format=zip|tar.gz` 写入 `<workspace>/.dsh-git-graph/archives/`，
+  realpath 围栏、文件名净化 + 唯一后缀、返回工作区相对路径/字节数；提交/分支/标签/远端菜单入口 + 格式选择对话框。
+
+### [x] TODO-29 作者头像
+
+- `repository.commits.fetchAvatars`（默认关闭）→ `/graph`、`/commit` 的 Gravatar URL（md5 + identicon，空邮箱 null），
+  `presentation.avatars` 开关；客户端 `<img referrerpolicy=no-referrer loading=lazy>` + 首字母彩色兜底，关闭时无网络请求。
+
+### [x] TODO-30 PR 创建集成
+
+- `POST /pr`：origin/首个 remote 解析（https/ssh）→ github/gitlab（含子组）/bitbucket/other；
+  base ← 请求 → `origin/HEAD` → main → master；内置 compare/MR/PR URL + `customPullRequestProviders` 的 `$1..$8` 模板；
+  客户端对话框展示 provider、`base ← branch`、URL，可复制/打开。
+
+### [x] TODO-31 跨工作区批量结束评审
+
+- `/review` 新增 `scopes`（遍历所有会话键，repoPath + reviewed/total + 时间，回收过期项，上限 100）
+  与 `end`（按范围或 `all:true` 批量清除）；评审条目写入 `repoPath`；客户端评审管理面板分组列出并支持单个/全部结束。
+
+### [x] TODO-32 仓库配置导入/导出
+
+- `<repo>/.gitgraph.json`（≤128 KiB，`{version, exportedAt, settings}`）+ `POST /repoconfig` 的 status/export/import/clear；
+  导出仅写非默认的 canonical 键，导入校验并报告 unknown/invalid，按仓库覆盖生效（仓库优先于插件配置），清除恢复；
+  客户端对话框显示状态/路径/键数/冲突并可在导入后刷新图谱。
+
+## 非目标（wave 9 之后只剩设置键层面）
+
+功能层面已无未迁移项。以下仅剩设置键层面的差异，逐键理由见 [`settings-parity.md`](./settings-parity.md)：
 
 | 项 | 原因 |
 | --- | --- |
-| VS Code diff 编辑器 / `openFile` / `openDiffTabLocation` | 由 DSH 文档预览与工作区文件页承担 |
-| 状态栏按钮、命令面板命令 | 入口由右侧栏 guide 卡片承担 |
-| `retainContextWhenHidden`、`integratedTerminalShell` | VS Code 宿主专属 |
-| 推送 PR 创建集成（GitHub/GitLab/Bitbucket 及自定义 provider） | 依赖外部平台 OAuth 与网络；如需可单独立项 |
-| interactive rebase | 需交互式序列编辑器，超出面板能力 |
-| 头像（`fetchAvatars`、`clearAvatarCache`） | 需网络与缓存目录，且与隐私取舍相关 |
+| 10 项 VS Code 专属键（`commitDetailsView.location`、`openNewTabEditorGroup`、`showStatusBarItem`、`retainContextWhenHidden`、`integratedTerminalShell` 等） | DSH 没有对应宿主物（webview 布局、编辑器分组、状态栏、集成终端） |
+| `repository.sign.*`（提交/标签签名） | 需要 `gpg` 与签名身份，沙箱无法验证；且属宿主级安全策略 |
+| `dialog.*` 中 DSH 对话框未提供的 14 项、`repository.onLoad.*`、`fileEncoding` 等（共 26 项 out-of-scope） | 要么没有对应 UI 控件，要么只有透传无消费者；逐条写在处置表里 |
+| interactive rebase | 需交互式序列编辑器，超出侧栏面板能力 |
+
+> wave 9 已把原先的 6 项功能级非目标（列宽拖拽、`git archive`、头像、PR 创建、跨工作区评审管理、
+> 仓库配置导入/导出）全部迁移。
 
 ---
 
