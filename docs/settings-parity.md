@@ -8,9 +8,10 @@ generated from it, so a missing/extra row is a test failure.
 
 **Wiring legend**
 
-- `mapped` — this plugin honours the value today, through an existing graph/config option or
-  the `/graph` `presentation` payload (`presentation.*`). Entries marked “wave C” are forwarded
-  by the host now and consumed by the client in the wave assigned by `docs/wave8-contract.md`.
+- `mapped` — the plugin has a **concrete consumer** in host or client code that changes observable
+  behaviour: a `lib/index.js` / `lib/git.js` option or argv flag, or a `presentation.*` member the
+  client actually reads (the note names the consumer). Values that are only passed through the
+  payload without a consumer are not mapped.
 - `vscode-only` — the setting only means something inside the VS Code host (editor groups,
   integrated terminal, status bar, webview retention, tab theming) and has no DSH counterpart.
 - `out-of-scope` — a declared non-goal of this port (avatars, PR providers, interactive rebase,
@@ -25,12 +26,12 @@ not appear in this table.
 
 | Wiring | Entries | Canonical | Aliases |
 | --- | ---: | ---: | ---: |
-| `mapped` | 72 | 49 | 23 |
+| `mapped` | 71 | 48 | 23 |
 | `vscode-only` | 10 | 8 | 2 |
-| `out-of-scope` | 28 | 24 | 4 |
+| `out-of-scope` | 29 | 25 | 4 |
 | **total** | **110** | **81** | **29** |
 
-Catalog: 110 entries = 81 canonical settings + 29 aliases, split **mapped 72** / **vscode-only 10** / **out-of-scope 28**.
+Catalog: 110 entries = 81 canonical settings + 29 aliases, split **mapped 71** / **vscode-only 10** / **out-of-scope 29**.
 
 `aliasOf` marks the 29 legacy flat spellings upstream still declares: their value folds into
 the canonical key and the canonical key wins when both are set and differ.
@@ -39,27 +40,40 @@ the canonical key and the canonical key wins when both are set and differ.
 
 `PRESENTATION_KEYS` holds **29** keys: the 26 contract §4 keys in their original order, then
 `initialLoad` (300), `loadMore` (100) and `loadMoreAutomatically` (true) appended for the
-wave-8-C part 2 client pagination consumer. `presentation.initialLoad` / `presentation.loadMore`
-are clamped to **1–2000**; out-of-range or fractional values are clamped and reported in `invalid`.
+client pagination consumer. `presentation.initialLoad` / `presentation.loadMore` are clamped to
+**1–2000**; out-of-range or fractional values are clamped and reported in `invalid`.
+
+## Audit
+
+Every `mapped` row was re-audited against the final code: the host consumers live in
+`lib/index.js` (`apply`/`handleGraph`/`handleAction`, repository discovery) and `lib/git.js`
+(`readGraph`/`readUncommitted`/`performAction`); the client consumers live in `lib/client.js`
+(`presentationOf` plus the components that read each member, e.g. `formatCommitDate`,
+`dialogDefaultsFor`, `layoutRefChips`, `paginationOf`/`shouldAutoLoad`, `shortcutFor`,
+`visibleMenuItems`, `orderedRepositories`). The only former `mapped` key demoted in this audit is
+`fileEncoding`: the value is still forwarded as `presentation.fileEncoding`, but no host or client
+code reads it, so it is now `out-of-scope`. Legacy aliases inherit the wiring and consumer of
+their canonical key. `test/settings.test.js` pins the invariant that no mapped note defers to a
+future wave, and that this document's count table matches the module.
 
 ## Key table
 
 | Key | Type | Default | aliasOf / wiring | Note |
 | --- | --- | --- | --- | --- |
-| `commitDetailsView.autoCenter` | `boolean` | `true` | `mapped` | presentation.autoCenterDetails (client consumes in wave C) |
-| `commitDetailsView.fileView.fileTree.compactFolders` | `boolean` | `true` | `mapped` | presentation.compactFolders (client consumes in wave C) |
-| `commitDetailsView.fileView.type` | `string` | `"File Tree"` | `mapped` | presentation.fileViewType (client consumes in wave C) |
+| `commitDetailsView.autoCenter` | `boolean` | `true` | `mapped` | presentation.autoCenterDetails -> DetailView scrollDetailIntoView (auto-centers the opened detail) |
+| `commitDetailsView.fileView.fileTree.compactFolders` | `boolean` | `true` | `mapped` | presentation.compactFolders -> buildFileTree compact chains in the detail/comparison file view |
+| `commitDetailsView.fileView.type` | `string` | `"File Tree"` | `mapped` | presentation.fileViewType -> default detail file view (fileViewOf) |
 | `commitDetailsView.location` | `string` | `"Inline"` | `vscode-only` | VS Code webview layout (inline vs docked); the DSH sidebar has one fixed layout |
-| `contextMenuActionsVisibility` | `object` | `{}` | `mapped` | presentation.contextMenuVisibility (client consumes in wave C) |
-| `customBranchGlobPatterns` | `array` | `[]` | `mapped` | presentation.customBranchGlobPatterns (glob-filter prefill, client wave A/B) |
-| `customEmojiShortcodeMappings` | `array` | `[]` | `mapped` | presentation.emojiMappings (client consumes in wave C) |
+| `contextMenuActionsVisibility` | `object` | `{}` | `mapped` | presentation.contextMenuVisibility -> context-menu filter (visibleMenuItems); groups are flattened to action ids, so one false hides that action across menus |
+| `customBranchGlobPatterns` | `array` | `[]` | `mapped` | presentation.customBranchGlobPatterns -> branch-filter glob prefill (globPrefillText) |
+| `customEmojiShortcodeMappings` | `array` | `[]` | `mapped` | presentation.emojiMappings -> emojiTable merged into richTextParts |
 | `customPullRequestProviders` | `array` | `[]` | `out-of-scope` | non-goal: PR provider integrations (parity.md section 5) |
-| `date.format` | `string` | `"Date & Time"` | `mapped` | presentation.dateFormat (client consumes in wave C) |
-| `date.type` | `string` | `"Author Date"` | `mapped` | presentation.dateType (client consumes in wave C) |
-| `defaultColumnVisibility` | `object` | `{"Date":true,"Author":true,"Commit":true}` | `mapped` | presentation.columnVisibility (client consumes in wave C) |
+| `date.format` | `string` | `"Date & Time"` | `mapped` | presentation.dateFormat -> formatCommitDate (commit row and detail dates) |
+| `date.type` | `string` | `"Author Date"` | `mapped` | presentation.dateType -> author vs committer date in the commit row and detail |
+| `defaultColumnVisibility` | `object` | `{"Date":true,"Author":true,"Commit":true}` | `mapped` | presentation.columnVisibility -> initial column toggles (columnsOf) |
 | `dialog.addTag.pushToRemote` | `boolean` | `false` | `out-of-scope` | no add-tag push option in the DSH dialog; pushing tags is a separate action |
 | `dialog.addTag.type` | `string` | `"Annotated"` | `out-of-scope` | the DSH create-tag action always creates a lightweight tag |
-| `dialog.applyStash.reinstateIndex` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.applyStash.reinstateIndex (apply/pop dialog) |
+| `dialog.applyStash.reinstateIndex` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.applyStash.reinstateIndex -> ActionDialog stash-apply default (dialogDefaultsFor) |
 | `dialog.cherryPick.noCommit` | `boolean` | `false` | `out-of-scope` | the DSH cherry-pick dialog has no option controls |
 | `dialog.cherryPick.recordOrigin` | `boolean` | `false` | `out-of-scope` | the DSH cherry-pick dialog has no option controls |
 | `dialog.createBranch.checkOut` | `boolean` | `false` | `out-of-scope` | no check-out option in the DSH create-branch dialog |
@@ -68,61 +82,61 @@ are clamped to **1–2000**; out-of-range or fractional values are clamped and r
 | `dialog.fetchRemote.prune` | `boolean` | `false` | `out-of-scope` | the fetch dialog has no prune control; the canonical repository.fetchAndPrune applies |
 | `dialog.fetchRemote.pruneTags` | `boolean` | `false` | `out-of-scope` | the fetch dialog has no prune-tags control; the canonical repository.fetchAndPruneTags applies |
 | `dialog.general.referenceInputSpaceSubstitution` | `string` | `"None"` | `out-of-scope` | DSH ref-name inputs do not substitute spaces |
-| `dialog.merge.noCommit` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.merge.noCommit (merge dialog) |
-| `dialog.merge.noFastForward` | `boolean` | `true` | `mapped` | presentation.dialogDefaults.merge.noFastForward (merge dialog) |
-| `dialog.merge.squashCommits` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.merge.squashCommits (merge dialog) |
+| `dialog.merge.noCommit` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.merge.noCommit -> ActionDialog merge checkbox default (dialogDefaultsFor) |
+| `dialog.merge.noFastForward` | `boolean` | `true` | `mapped` | presentation.dialogDefaults.merge.noFastForward -> ActionDialog merge checkbox default (dialogDefaultsFor) |
+| `dialog.merge.squashCommits` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.merge.squashCommits -> ActionDialog merge squash default (dialogDefaultsFor) |
 | `dialog.merge.squashMessageFormat` | `string` | `"Default"` | `out-of-scope` | the squash message format is not configurable |
-| `dialog.popStash.reinstateIndex` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.popStash.reinstateIndex (apply/pop dialog) |
-| `dialog.pullBranch.noFastForward` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.pullBranch.noFastForward (pull dialog) |
+| `dialog.popStash.reinstateIndex` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.popStash.reinstateIndex -> ActionDialog stash-pop default (dialogDefaultsFor) |
+| `dialog.pullBranch.noFastForward` | `boolean` | `false` | `mapped` | presentation.dialogDefaults.pullBranch.noFastForward -> ActionDialog pull checkbox default (dialogDefaultsFor) |
 | `dialog.pullBranch.squashCommits` | `boolean` | `false` | `out-of-scope` | the pull dialog offers rebase, not squash |
 | `dialog.pullBranch.squashMessageFormat` | `string` | `"Default"` | `out-of-scope` | the pull dialog offers no squash option |
 | `dialog.rebase.ignoreDate` | `boolean` | `true` | `out-of-scope` | the rebase dialog only takes an --onto target |
 | `dialog.rebase.launchInteractiveRebase` | `boolean` | `false` | `out-of-scope` | non-goal: interactive rebase |
-| `dialog.resetCurrentBranchToCommit.mode` | `string` | `"Mixed"` | `mapped` | presentation.dialogDefaults.resetCurrentBranchToCommit.mode (reset dialog) |
-| `dialog.resetUncommittedChanges.mode` | `string` | `"Mixed"` | `mapped` | presentation.dialogDefaults.resetUncommittedChanges.mode (reset dialog) |
-| `dialog.stashUncommittedChanges.includeUntracked` | `boolean` | `true` | `mapped` | presentation.dialogDefaults.stashUncommittedChanges.includeUntracked (stash dialogs) |
-| `enhancedAccessibility` | `boolean` | `false` | `mapped` | presentation.enhancedAccessibility (client consumes in wave C) |
-| `fileEncoding` | `string` | `"utf8"` | `mapped` | presentation.fileEncoding (client consumes in wave C) |
-| `graph.colours` | `array` | `["#0085d9","#d9008f","#00d90a","#d98500","#a300d9","#ff0000","#00d9cc","#e138e8","#85d900","#dc5b23","#6f24d6","#ffcc00"]` | `mapped` | presentation.graphColours (config.graphColours is wired today) |
-| `graph.style` | `string` | `"rounded"` | `mapped` | presentation.graphStyle (config.graphStyle is wired today) |
+| `dialog.resetCurrentBranchToCommit.mode` | `string` | `"Mixed"` | `mapped` | presentation.dialogDefaults.resetCurrentBranchToCommit.mode -> ActionDialog reset-mode default (dialogDefaultsFor) |
+| `dialog.resetUncommittedChanges.mode` | `string` | `"Mixed"` | `mapped` | presentation.dialogDefaults.resetUncommittedChanges.mode -> ActionDialog reset-uncommitted mode default (dialogDefaultsFor) |
+| `dialog.stashUncommittedChanges.includeUntracked` | `boolean` | `true` | `mapped` | presentation.dialogDefaults.stashUncommittedChanges.includeUntracked -> ActionDialog stash include-untracked default (dialogDefaultsFor) |
+| `enhancedAccessibility` | `boolean` | `false` | `mapped` | presentation.enhancedAccessibility -> FileRow status text/aria labels and ActionDialog accessibility labels |
+| `fileEncoding` | `string` | `"utf8"` | `out-of-scope` | value is forwarded in presentation.fileEncoding but the client has no consumer; file-content encoding selection is not implemented |
+| `graph.colours` | `array` | `["#0085d9","#d9008f","#00d90a","#d98500","#a300d9","#ff0000","#00d9cc","#e138e8","#85d900","#dc5b23","#6f24d6","#ffcc00"]` | `mapped` | presentation.graphColours -> laneColor graph palette |
+| `graph.style` | `string` | `"rounded"` | `mapped` | presentation.graphStyle -> lanePath/Graph rounded vs angular rendering |
 | `graph.uncommittedChanges` | `string` | `"Open Circle at the Uncommitted Changes"` | `out-of-scope` | the uncommitted-changes row is always drawn at the top; no rendering option |
 | `integratedTerminalShell` | `string` | `""` | `vscode-only` | VS Code integrated terminal shell; DSH has no integrated terminal |
-| `keyboardShortcut.find` | `string` | `"CTRL/CMD + F"` | `mapped` | presentation.shortcuts.find (parseShortcut; client wave B) |
-| `keyboardShortcut.refresh` | `string` | `"CTRL/CMD + R"` | `mapped` | presentation.shortcuts.refresh (parseShortcut; client wave B) |
-| `keyboardShortcut.scrollToHead` | `string` | `"CTRL/CMD + H"` | `mapped` | presentation.shortcuts.scrollToHead (parseShortcut; client wave B) |
-| `keyboardShortcut.scrollToStash` | `string` | `"CTRL/CMD + S"` | `mapped` | presentation.shortcuts.scrollToStash (parseShortcut; client wave B) |
-| `markdown` | `boolean` | `true` | `mapped` | presentation.markdown (client consumes in wave C) |
-| `maxDepthOfRepoSearch` | `number` | `0` | `mapped` | config.maxDepthOfRepoSearch (repository discovery is wired today) |
+| `keyboardShortcut.find` | `string` | `"CTRL/CMD + F"` | `mapped` | presentation.shortcuts.find -> tab-scoped keydown handler (shortcutFor) |
+| `keyboardShortcut.refresh` | `string` | `"CTRL/CMD + R"` | `mapped` | presentation.shortcuts.refresh -> tab-scoped keydown handler (shortcutFor) |
+| `keyboardShortcut.scrollToHead` | `string` | `"CTRL/CMD + H"` | `mapped` | presentation.shortcuts.scrollToHead -> tab-scoped keydown handler (shortcutFor) |
+| `keyboardShortcut.scrollToStash` | `string` | `"CTRL/CMD + S"` | `mapped` | presentation.shortcuts.scrollToStash -> tab-scoped keydown handler (shortcutFor) |
+| `markdown` | `boolean` | `true` | `mapped` | presentation.markdown -> RichText markdown subset in tag detail messages |
+| `maxDepthOfRepoSearch` | `number` | `0` | `mapped` | lib/index.js normalizeSearchDepth -> repository discovery depth |
 | `openNewTabEditorGroup` | `string` | `"Active"` | `vscode-only` | VS Code editor-group placement for the diff view; DSH renders diffs in its own panel |
 | `openToTheRepoOfTheActiveTextEditorDocument` | `boolean` | `false` | `vscode-only` | depends on the VS Code active text editor/document |
-| `referenceLabels.alignment` | `string` | `"Normal"` | `mapped` | presentation.referenceLabelAlignment (client consumes in wave C) |
-| `referenceLabels.combineLocalAndRemoteBranchLabels` | `boolean` | `true` | `mapped` | presentation.combineLocalAndRemoteBranchLabels (client consumes in wave C) |
+| `referenceLabels.alignment` | `string` | `"Normal"` | `mapped` | presentation.referenceLabelAlignment -> layoutRefChips alignment |
+| `referenceLabels.combineLocalAndRemoteBranchLabels` | `boolean` | `true` | `mapped` | presentation.combineLocalAndRemoteBranchLabels -> combineLocalAndRemoteChips in layoutRefChips |
 | `repository.commits.fetchAvatars` | `boolean` | `false` | `out-of-scope` | non-goal: avatars (parity.md section 5) |
-| `repository.commits.initialLoad` | `number` | `300` | `mapped` | default graph page size (300) when the request omits `limit`; still capped |
-| `repository.commits.loadMore` | `number` | `100` | `mapped` | presentation.loadMore (default 100; client pagination step, consumed in wave 8-C part 2) |
-| `repository.commits.loadMoreAutomatically` | `boolean` | `true` | `mapped` | presentation.loadMoreAutomatically (default true; client auto-load, consumed in wave 8-C part 2) |
-| `repository.commits.mute.commitsThatAreNotAncestorsOfHead` | `boolean` | `false` | `mapped` | presentation.muteNonAncestors (client consumes in wave C) |
-| `repository.commits.mute.mergeCommits` | `boolean` | `true` | `mapped` | presentation.muteMergeCommits (client consumes in wave C) |
-| `repository.commits.order` | `string` | `"date"` | `mapped` | graph option order: default when the request omits `order`; invalid values fall back to date |
-| `repository.commits.showSignatureStatus` | `boolean` | `false` | `mapped` | presentation.showSignature (config.showSignature is wired today) |
-| `repository.fetchAndPrune` | `boolean` | `false` | `mapped` | fetch passes --prune only when true (upstream default false; request prune overrides) |
-| `repository.fetchAndPruneTags` | `boolean` | `false` | `mapped` | fetch passes --prune-tags only when true (request pruneTags overrides) |
-| `repository.includeCommitsMentionedByReflogs` | `boolean` | `false` | `mapped` | graph option includeReflogCommits: adds --reflog to the default walk |
+| `repository.commits.initialLoad` | `number` | `300` | `mapped` | default graph page size (300) when the request omits `limit`; still capped; presentation.initialLoad seeds the client's first request (paginationOf) |
+| `repository.commits.loadMore` | `number` | `100` | `mapped` | presentation.loadMore -> client pagination step (requestMoreCommits) |
+| `repository.commits.loadMoreAutomatically` | `boolean` | `true` | `mapped` | presentation.loadMoreAutomatically -> shouldAutoLoad load-more-on-scroll |
+| `repository.commits.mute.commitsThatAreNotAncestorsOfHead` | `boolean` | `false` | `mapped` | presentation.muteNonAncestors -> muted row styling (nonAncestorHashes) |
+| `repository.commits.mute.mergeCommits` | `boolean` | `true` | `mapped` | presentation.muteMergeCommits -> muted merge-row styling (CommitRow) |
+| `repository.commits.order` | `string` | `"date"` | `mapped` | lib/index.js defaultOrder -> git readGraph order flag when the request omits `order`; invalid values fall back to date |
+| `repository.commits.showSignatureStatus` | `boolean` | `false` | `mapped` | presentation.showSignature -> signatureBadge in DetailView |
+| `repository.fetchAndPrune` | `boolean` | `false` | `mapped` | lib/git.js performAction fetch: --prune only when true (upstream default false; request prune overrides) |
+| `repository.fetchAndPruneTags` | `boolean` | `false` | `mapped` | lib/git.js performAction fetch: --prune-tags only when true (request pruneTags overrides) |
+| `repository.includeCommitsMentionedByReflogs` | `boolean` | `false` | `mapped` | lib/index.js includeReflogCommits -> readGraph --reflog on the default walk |
 | `repository.onLoad.scrollToHead` | `boolean` | `false` | `out-of-scope` | there is no scroll-to-head on repository load |
 | `repository.onLoad.showCheckedOutBranch` | `boolean` | `false` | `out-of-scope` | branch filtering defaults to all branches |
 | `repository.onLoad.showSpecificBranches` | `array` | `[]` | `out-of-scope` | there is no per-repository branch filter on load |
-| `repository.onlyFollowFirstParent` | `boolean` | `false` | `mapped` | graph option firstParent: adds --first-parent to the walk |
-| `repository.showCommitsOnlyReferencedByTags` | `boolean` | `true` | `mapped` | with showTags, controls the --tags walk source |
-| `repository.showRemoteBranches` | `boolean` | `true` | `mapped` | graph option showRemoteBranches (wired today) |
-| `repository.showRemoteHeads` | `boolean` | `true` | `mapped` | drops refs/remotes/<remote>/HEAD refs and origin/HEAD decoration chips |
-| `repository.showStashes` | `boolean` | `true` | `mapped` | graph option showStashes (wired today) |
-| `repository.showTags` | `boolean` | `true` | `mapped` | controls the --tags walk source plus tag refs/chips/menus |
+| `repository.onlyFollowFirstParent` | `boolean` | `false` | `mapped` | lib/index.js firstParent -> readGraph --first-parent on the walk |
+| `repository.showCommitsOnlyReferencedByTags` | `boolean` | `true` | `mapped` | lib/git.js readGraph includeTags -> --tags walk source (with showTags) |
+| `repository.showRemoteBranches` | `boolean` | `true` | `mapped` | lib/git.js readGraph --remotes walk plus remote branch chips |
+| `repository.showRemoteHeads` | `boolean` | `true` | `mapped` | lib/git.js readGraph drops refs/remotes/<remote>/HEAD refs and origin/HEAD decoration chips |
+| `repository.showStashes` | `boolean` | `true` | `mapped` | lib/git.js readGraph stash refs/list and the `stashes` member |
+| `repository.showTags` | `boolean` | `true` | `mapped` | lib/git.js readGraph --tags walk source plus tag refs/chips/menus |
 | `repository.showUncommittedChanges` | `boolean` | `true` | `out-of-scope` | the uncommitted-changes row is always shown |
-| `repository.showUntrackedFiles` | `boolean` | `true` | `mapped` | /uncommitted ignores untracked files (--untracked-files=no) when false |
+| `repository.showUntrackedFiles` | `boolean` | `true` | `mapped` | lib/git.js readUncommitted passes --untracked-files=no when false |
 | `repository.sign.commits` | `boolean` | `false` | `out-of-scope` | non-goal: commit signing (-S) is not implemented |
 | `repository.sign.tags` | `boolean` | `false` | `out-of-scope` | non-goal: tag signing is not implemented |
-| `repository.useMailmap` | `boolean` | `false` | `mapped` | presentation.useMailmap + graph option useMailmap (wired today) |
-| `repositoryDropdownOrder` | `string` | `"Workspace Full Path"` | `mapped` | presentation.repositoryDropdownOrder (client consumes in wave C) |
+| `repository.useMailmap` | `boolean` | `false` | `mapped` | lib/git.js readGraph --use-mailmap + mailmap-aware placeholders; also presentation.useMailmap |
+| `repositoryDropdownOrder` | `string` | `"Workspace Full Path"` | `mapped` | presentation.repositoryDropdownOrder -> orderedRepositories repo-dropdown sort |
 | `retainContextWhenHidden` | `boolean` | `true` | `vscode-only` | VS Code webview retention; DSH panels stay mounted |
 | `showStatusBarItem` | `boolean` | `true` | `vscode-only` | VS Code status bar item; DSH has no status bar |
 | `sourceCodeProviderIntegrationLocation` | `string` | `"Inline"` | `vscode-only` | VS Code Source Control provider integration |
@@ -159,7 +173,7 @@ are clamped to **1–2000**; out-of-range or fractional values are clamped and r
 
 ## How this is verified
 
-`test/settings.test.js` (node:test) imports `lib/settings.js` directly and runs with `node --test` (plus `node --check lib/settings.js` for the syntax gate). It asserts: exactly 110 unique keys and the 110-row table above; the 81 canonical / 29 alias split with every `aliasOf` target existing and being canonical; the 72 mapped / 10 vscode-only / 28 out-of-scope split with a non-empty one-line note on every non-mapped entry; folding of all 29 aliases and canonical-wins precedence when both are set and differ; that the wave-8-B host-wired keys are mapped and their notes describe the current behaviour; number/boolean/array/object coercion and the `invalid`/`unknown` reports; a presentation payload containing exactly the 29 keys (the 26 contract §4 keys plus the three appended pagination keys) in order that survives `JSON.stringify` and is request-independent; the 1–2000 pagination clamp; and `parseShortcut` for all four `keyboardShortcut.*` keys (CTRL/CMD/ALT/SHIFT and function keys) including the default fallback for unparsable descriptors. The suite also feeds `normalizeSettings` non-objects, throwing proxies and throwing getters to prove it never throws.
+`test/settings.test.js` (node:test) imports `lib/settings.js` directly and runs with `node --test` (plus `node --check lib/settings.js` for the syntax gate). It asserts: exactly 110 unique keys and the 110-row table above; the 81 canonical / 29 alias split with every `aliasOf` target existing and being canonical; the 71 mapped / 10 vscode-only / 29 out-of-scope split with a non-empty one-line note on every non-mapped entry; folding of all 29 aliases and canonical-wins precedence when both are set and differ; that the wave-8-B host-wired keys are mapped and their notes describe the current behaviour; that every mapped note names a concrete consumer and none defers to a future wave or admits having no consumer (and that this document's count table matches the module exactly); number/boolean/array/object coercion and the `invalid`/`unknown` reports; a presentation payload containing exactly the 29 keys (the 26 contract §4 keys plus the three appended pagination keys) in order that survives `JSON.stringify` and is request-independent; the 1–2000 pagination clamp; and `parseShortcut` for all four `keyboardShortcut.*` keys (CTRL/CMD/ALT/SHIFT and function keys) including the default fallback for unparsable descriptors. The suite also feeds `normalizeSettings` non-objects, throwing proxies and throwing getters to prove it never throws.
 
 ## User-visible defaults changed by the host wiring
 

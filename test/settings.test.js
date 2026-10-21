@@ -242,22 +242,22 @@ test("canonical keys are the 81 entries without aliasOf", () => {
   assert.equal(CANONICAL_KEYS.length + 29, SETTINGS.length);
 });
 
-test("wiring counts match the parity report: 72 mapped / 10 vscode-only / 28 out-of-scope", () => {
+test("wiring counts match the parity report: 71 mapped / 10 vscode-only / 29 out-of-scope", () => {
   const counts = { mapped: 0, "vscode-only": 0, "out-of-scope": 0 };
   for (const setting of SETTINGS) counts[setting.wiring] += 1;
-  assert.deepEqual(counts, { mapped: 72, "vscode-only": 10, "out-of-scope": 28 });
+  assert.deepEqual(counts, { mapped: 71, "vscode-only": 10, "out-of-scope": 29 });
 
   const canonicalCounts = { mapped: 0, "vscode-only": 0, "out-of-scope": 0 };
   for (const setting of SETTINGS) {
     if (setting.aliasOf === undefined) canonicalCounts[setting.wiring] += 1;
   }
-  assert.deepEqual(canonicalCounts, { mapped: 49, "vscode-only": 8, "out-of-scope": 24 });
+  assert.deepEqual(canonicalCounts, { mapped: 48, "vscode-only": 8, "out-of-scope": 25 });
 });
 
 test("the wave-8-B host-wired keys are mapped and describe what happens now", () => {
   const byKey = new Map(SETTINGS.map((setting) => [setting.key, setting]));
   const wired = [
-    ["repository.commits.order", /default when the request omits `order`/],
+    ["repository.commits.order", /when the request omits `order`/],
     ["repository.commits.initialLoad", /default graph page size \(300\)/],
     ["repository.commits.loadMore", /presentation\.loadMore/],
     ["repository.commits.loadMoreAutomatically", /presentation\.loadMoreAutomatically/],
@@ -307,6 +307,18 @@ test("no mapped entry still claims it is out of scope, always shown or always pr
     if (setting.wiring !== "mapped") continue;
     assert.doesNotMatch(setting.note, stale, `stale mapped alias note on ${setting.key}: ${setting.note}`);
   }
+});
+
+test("no mapped note defers to a future wave or admits it has no consumer", () => {
+  /* A mapped note must name the consumer that exists now, never promise one later. */
+  const deferred = /wave\s*[a-c8]|consumes? in wave|client consumes|future wave|not yet|no consumer|forwarded in presentation but/i;
+  for (const setting of SETTINGS) {
+    if (setting.wiring !== "mapped") continue;
+    assert.doesNotMatch(setting.note, deferred, `mapped note defers to a future wave or lacks a consumer (${setting.key}): ${setting.note}`);
+  }
+  /* The demoted passthrough is explicit about having no consumer. */
+  assert.equal(SETTINGS.find((setting) => setting.key === "fileEncoding").wiring, "out-of-scope");
+  assert.match(SETTINGS.find((setting) => setting.key === "fileEncoding").note, /no consumer/);
 });
 
 test("enum declarations only reference canonical keys with string values", () => {
@@ -920,14 +932,33 @@ test("the parity document contains one row per key and the matching counts", () 
     .map((match) => match[1]);
   assert.deepEqual(rows, SETTINGS.map((setting) => setting.key));
 
-  const mapped = SETTINGS.filter((setting) => setting.wiring === "mapped").length;
-  const vscodeOnly = SETTINGS.filter((setting) => setting.wiring === "vscode-only").length;
-  const outOfScope = SETTINGS.filter((setting) => setting.wiring === "out-of-scope").length;
+  /* The counts table is diagnostic documentation, so it must match the module exactly. */
+  const expectedCounts = { total: { total: 0, canonical: 0, aliases: 0 } };
+  for (const wire of ["mapped", "vscode-only", "out-of-scope"]) expectedCounts[wire] = { total: 0, canonical: 0, aliases: 0 };
+  for (const setting of SETTINGS) {
+    const isAlias = setting.aliasOf !== undefined;
+    for (const bucket of [expectedCounts[setting.wiring], expectedCounts.total]) {
+      bucket.total += 1;
+      bucket[isAlias ? "aliases" : "canonical"] += 1;
+    }
+  }
+  const countsSection = document.slice(document.indexOf("## Counts"), document.indexOf("## Presentation payload"));
+  const countRows = {};
+  for (const line of countsSection.split("\n")) {
+    const match = /^\|\s*\**`?(mapped|vscode-only|out-of-scope|total)`?\**\s*\|\s*\**(\d+)\**\s*\|\s*\**(\d+)\**\s*\|\s*\**(\d+)\**\s*\|$/.exec(line);
+    if (match === null) continue;
+    countRows[match[1]] = { total: Number(match[2]), canonical: Number(match[3]), aliases: Number(match[4]) };
+  }
+  assert.deepEqual(countRows, expectedCounts);
+
   assert.match(document, /110 configuration keys/);
-  assert.match(document, new RegExp(`mapped[^\\n]*\\b${mapped}\\b`));
-  assert.match(document, new RegExp(`vscode-only[^\\n]*\\b${vscodeOnly}\\b`));
-  assert.match(document, new RegExp(`out-of-scope[^\\n]*\\b${outOfScope}\\b`));
   assert.match(document, /29 (?:legacy )?aliases/);
   assert.match(document, /how this is verified/i);
   assert.match(document, /node --test/);
+  /* The audit paragraph names the real consumer files. */
+  const audit = document.slice(document.indexOf("## Audit"), document.indexOf("## Key table"));
+  assert.match(audit, /lib\/index\.js/);
+  assert.match(audit, /lib\/git\.js/);
+  assert.match(audit, /lib\/client\.js/);
+  assert.match(audit, /fileEncoding/);
 });
