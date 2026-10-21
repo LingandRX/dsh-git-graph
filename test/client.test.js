@@ -1590,13 +1590,19 @@ test("the inline detail row bridges the graph lanes", () => {
     { fromLane: 1, fromY: 0.5, toLane: 2, toY: 1, colorLane: 2 },
     { fromLane: 3, fromY: 1, toLane: 3, toY: 0.5 },
   ] };
-  const lines = laneBridge(row, palette);
+  const lines = laneBridge(row, palette, 3);
   assert.equal(lines.length, 2, "only lanes continuing below the commit are bridged");
-  assert.deepEqual(plain(lines[0].props.style), { left: "8px", background: palette[0] }, "lane 0 keeps its column and colour");
-  assert.deepEqual(plain(lines[1].props.style), { left: "36px", background: palette[2] }, "lane 2 uses its colour lane");
+  // A 3-lane page draws a 44px SVG in a 44px cell (no centring offset); the 2px
+  // line is centred on the lane centre (lane * 14 + 8).
+  assert.deepEqual(plain(lines[0].props.style), { left: "7px", background: palette[0] }, "lane 0 keeps its column and colour");
+  assert.deepEqual(plain(lines[1].props.style), { left: "35px", background: palette[2] }, "lane 2 uses its colour lane");
+  // A one-lane page centres a 16px SVG in the 40px cell: the bridge must shift by
+  // the same 12px, otherwise it sits left of the commit node.
+  const centred = laneBridge({ edges: [{ fromLane: 0, fromY: 0, toLane: 0, toY: 1 }] }, palette, 1);
+  assert.deepEqual(plain(centred[0].props.style), { left: "19px", background: palette[0] });
   assert.equal(lines[0].props.className, "dgg-bridge-line");
-  assert.equal(laneBridge(null, palette).length, 0);
-  assert.equal(laneBridge({ edges: [] }, palette).length, 0);
+  assert.equal(laneBridge(null, palette, 1).length, 0);
+  assert.equal(laneBridge({ edges: [] }, palette, 1).length, 0);
   // Wiring: the detail row renders the bridge only when another row follows.
   assert.match(SOURCE, /className: "dgg-detail-graph", "aria-hidden": "true" \}, hasNextRow === true \? laneBridge/);
   assert.match(SOURCE, /\.dgg-detail-graph\{position:relative;flex:0 0 var\(--dgg-graph-w, 40px\)/);
