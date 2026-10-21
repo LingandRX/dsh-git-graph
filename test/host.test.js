@@ -15,12 +15,13 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { createGitApi, createGitRunner, isValidRefName } from "../lib/git.js";
+import { SEARCH_SCAN_LIMIT, createGitApi, createGitRunner, isValidRefName } from "../lib/git.js";
 import { apply, name as pluginName, normalizeConfig } from "../lib/index.js";
 
 const FIELD = "\u001f";
 const NUL = "\u0000";
 const GRAPH_PATH = "/api/dsh-git-graph/graph";
+const SEARCH_PATH = "/api/dsh-git-graph/search";
 const COMMIT_PATH = "/api/dsh-git-graph/commit";
 const DIFF_PATH = "/api/dsh-git-graph/diff";
 const ACTION_PATH = "/api/dsh-git-graph/action";
@@ -104,6 +105,32 @@ function commitAt(cwd, seconds, message) {
   const date = gitDate(seconds);
   runGit(["commit", "-q", "-m", message], cwd, { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
   return runGit(["rev-parse", "HEAD"], cwd).trim();
+}
+
+/**
+ * Import a linear history of `count` empty commits in a single `git fast-import` call.
+ * The settings tests need a few hundred commits without paying one process per commit.
+ */
+function importLinearHistory(cwd, count) {
+  const records = [];
+  for (let index = 0; index < count; index += 1) {
+    const when = 1_700_100_000 + index;
+    const message = `imported commit ${index}`;
+    records.push(
+      "commit refs/heads/main",
+      `author Graph Test <graph@example.com> ${when} +0000`,
+      `committer Graph Test <graph@example.com> ${when} +0000`,
+      `data ${Buffer.byteLength(message, "utf8")}`,
+      message,
+      "",
+    );
+  }
+  execFileSync("git", ["fast-import", "--quiet"], {
+    cwd,
+    env: fixture.env,
+    input: `${records.join("\n")}\n`,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
 }
 
 /** Create one bare remote repository under the shared temporary root. */
@@ -734,8 +761,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 12);
-  assert.equal(second.routes.size, 12);
+  assert.equal(first.routes.size, 13);
+  assert.equal(second.routes.size, 13);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -754,11 +781,11 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the twelve POST Fetch routes", () => {
+test("apply registers exactly the thirteen POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
   assert.deepEqual(
     routes,
-    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, REPOS_PATH, REVIEW_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
+    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, REPOS_PATH, REVIEW_PATH, SEARCH_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
   );
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
@@ -774,7 +801,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 12);
+  assert.equal(noTools.routes.size, 13);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -2485,25 +2512,76 @@ test("readCommit reports signature status without an extra git process", async (
   }
 });
 
-test("graph presentation defaults, overrides and invalid fallbacks", async () => {
+test("graph presentation forwards all 29 settings keys", async () => {
   const dir = createScratchRepo("presentation");
   writeFile(path.join(dir, "a.txt"), "a\n");
   commitAll(dir, "A");
+
   const defaults = {
     graphStyle: "rounded",
-    graphColours: [],
+    graphColours: [
+      "#0085d9",
+      "#d9008f",
+      "#00d90a",
+      "#d98500",
+      "#a300d9",
+      "#ff0000",
+      "#00d9cc",
+      "#e138e8",
+      "#85d900",
+      "#dc5b23",
+      "#6f24d6",
+      "#ffcc00",
+    ],
     showSignature: false,
     showEmoji: true,
     issueUrlTemplate: "",
     useMailmap: false,
+    dateType: "Author Date",
+    dateFormat: "Date & Time",
+    referenceLabelAlignment: "Normal",
+    combineLocalAndRemoteBranchLabels: true,
+    columnVisibility: { Date: true, Author: true, Commit: true },
+    fileViewType: "File Tree",
+    compactFolders: true,
+    autoCenterDetails: true,
+    markdown: true,
+    muteMergeCommits: true,
+    muteNonAncestors: false,
+    emojiMappings: [],
+    customBranchGlobPatterns: [],
+    dialogDefaults: {
+      applyStash: { reinstateIndex: false },
+      merge: { noCommit: false, noFastForward: true, squashCommits: false },
+      popStash: { reinstateIndex: false },
+      pullBranch: { noFastForward: false },
+      resetCurrentBranchToCommit: { mode: "Mixed" },
+      resetUncommittedChanges: { mode: "Mixed" },
+      stashUncommittedChanges: { includeUntracked: true },
+    },
+    contextMenuVisibility: {},
+    shortcuts: {
+      find: { key: "f", ctrl: true, meta: true, alt: false, shift: false },
+      refresh: { key: "r", ctrl: true, meta: true, alt: false, shift: false },
+      scrollToHead: { key: "h", ctrl: true, meta: true, alt: false, shift: false },
+      scrollToStash: { key: "s", ctrl: true, meta: true, alt: false, shift: false },
+    },
+    globalShortcuts: false,
+    enhancedAccessibility: false,
+    repositoryDropdownOrder: "Workspace Full Path",
+    fileEncoding: "utf8",
+    initialLoad: 300,
+    loadMore: 100,
+    loadMoreAutomatically: true,
   };
+  const expectedKeys = Object.keys(defaults);
 
   const defaultHost = createHost({ config: undefined, defaultDirectory: dir });
   try {
     const graph = await post(defaultHost, GRAPH_PATH, {});
     assert.equal(graph.ok, true);
     assert.deepEqual(graph.value.presentation, defaults);
-    assert.equal(Object.keys(graph.value.presentation).length, 6);
+    assert.deepEqual(Object.keys(graph.value.presentation), expectedKeys, "presentation uses the contract key order");
   } finally {
     defaultHost.dispose();
   }
@@ -2516,37 +2594,72 @@ test("graph presentation defaults, overrides and invalid fallbacks", async () =>
       showEmoji: false,
       issueUrlTemplate: "https://example.com/issues/{id}",
       useMailmap: true,
+      dateType: "Commit Date",
+      dateFormat: "Relative",
+      defaultColumnVisibility: { Date: false, Author: true, Commit: true },
+      "commitDetailsView.fileView.type": "File List",
+      "commitDetailsView.fileView.fileTree.compactFolders": false,
+      "commitDetailsView.autoCenter": false,
+      markdown: false,
+      "repository.commits.mute.mergeCommits": false,
+      "repository.commits.mute.commitsThatAreNotAncestorsOfHead": true,
+      customEmojiShortcodeMappings: [{ shortcode: "party", emoji: "🎉" }],
+      customBranchGlobPatterns: [{ name: "Release", glob: "release/*" }],
+      globalShortcuts: true,
+      enhancedAccessibility: true,
+      repositoryDropdownOrder: "Name",
     },
     defaultDirectory: dir,
   });
   try {
-    const graph = await post(customHost, GRAPH_PATH, {});
-    assert.deepEqual(graph.value.presentation, {
+    const presentation = (await post(customHost, GRAPH_PATH, {})).value.presentation;
+    assert.deepEqual(Object.keys(presentation), expectedKeys);
+    assert.deepEqual(presentation, {
+      ...defaults,
       graphStyle: "angular",
       graphColours: ["#ff0000", "red", "var(--brand)", "rgb(1, 2, 3)"],
       showSignature: true,
       showEmoji: false,
       issueUrlTemplate: "https://example.com/issues/{id}",
       useMailmap: true,
+      dateType: "Commit Date",
+      dateFormat: "Relative",
+      columnVisibility: { Date: false, Author: true, Commit: true },
+      fileViewType: "File List",
+      compactFolders: false,
+      autoCenterDetails: false,
+      markdown: false,
+      muteMergeCommits: false,
+      muteNonAncestors: true,
+      emojiMappings: [{ shortcode: "party", emoji: "🎉" }],
+      customBranchGlobPatterns: [{ name: "Release", glob: "release/*" }],
+      globalShortcuts: true,
+      enhancedAccessibility: true,
+      repositoryDropdownOrder: "Name",
     });
   } finally {
     customHost.dispose();
   }
 
   const invalidHost = createHost({
-    config: { graphStyle: "triangular", graphColours: "#fff", showSignature: "yes", showEmoji: 0, issueUrlTemplate: 42, useMailmap: "1" },
+    config: {
+      graphStyle: "triangular",
+      graphColours: "#fff",
+      showSignature: {},
+      showEmoji: {},
+      issueUrlTemplate: 42,
+      useMailmap: {},
+      dateType: "Nonsense",
+      dateFormat: 7,
+      "commitDetailsView.fileView.type": "Nonsense",
+      globalShortcuts: {},
+      repositoryDropdownOrder: "Nonsense",
+    },
     defaultDirectory: dir,
   });
   try {
-    const graph = await post(invalidHost, GRAPH_PATH, {});
-    assert.deepEqual(graph.value.presentation, {
-      graphStyle: "rounded",
-      graphColours: [],
-      showSignature: true,
-      showEmoji: false,
-      issueUrlTemplate: "",
-      useMailmap: true,
-    });
+    const presentation = (await post(invalidHost, GRAPH_PATH, {})).value.presentation;
+    assert.deepEqual(presentation, defaults, "invalid values fall back to the documented defaults");
   } finally {
     invalidHost.dispose();
   }
@@ -2608,6 +2721,23 @@ test("useMailmap changes the commit walk argv and the reported author", async ()
     assert.equal(graph.value.commits[0].authorName, "Canonical Name");
   } finally {
     mailmapHost.dispose();
+  }
+
+  const canonicalHost = createHost({ config: { "repository.useMailmap": true }, defaultDirectory: dir });
+  try {
+    const graph = await post(canonicalHost, GRAPH_PATH, {});
+    assert.equal(graph.value.commits[0].authorName, "Canonical Name", "the canonical setting is wired");
+    assert.equal(graph.value.presentation.useMailmap, true);
+  } finally {
+    canonicalHost.dispose();
+  }
+
+  const invalidHost = createHost({ config: { "repository.useMailmap": 7 }, defaultDirectory: dir });
+  try {
+    const graph = await post(invalidHost, GRAPH_PATH, {});
+    assert.equal(graph.value.commits[0].authorName, "Graph Test", "an invalid value falls back to the default");
+  } finally {
+    invalidHost.dispose();
   }
 });
 
@@ -3036,4 +3166,803 @@ test("git_graph stays five read-only actions after multi-remote push", async () 
   await assert.rejects(tool.execute({ action: "pushToMultipleRemotes" }, exec), /unknown git_graph action/);
   const log = await tool.execute({ action: "log", limit: 2 }, exec);
   assert.equal(log.action, "log");
+});
+
+
+// ---------------------------------------------------------------------------
+// Wave 8: full-history search and working-tree comparison
+// ---------------------------------------------------------------------------
+
+test("searchCommits matches message, author, short hash and ref facets", async () => {
+  const dir = createScratchRepo("search-facets");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "Root commit for search");
+  writeFile(path.join(dir, "b.txt"), "b\n");
+  const target = commitAll(dir, "Alpha subject with marker", "Body mentions the Lobster bisque.");
+  runGit(["branch", "wave-search-ref"], dir);
+  runGit(["tag", "search-tag-v1"], dir);
+  writeFile(path.join(dir, "c.txt"), "c\n");
+  commitAll(dir, "Third unrelated commit");
+
+  const hashes = (value) => value.commits.map((commit) => commit.hash);
+
+  const byBody = await api.searchCommits(dir, { query: "lobster", scope: "message" });
+  assert.equal(byBody.isRepo, true);
+  assert.equal(byBody.query, "lobster");
+  assert.equal(byBody.scope, "message");
+  assert.deepEqual(hashes(byBody), [target], "the message scope searches the commit body");
+
+  const bySubject = await api.searchCommits(dir, { query: "ALPHA SUBJECT", scope: "message" });
+  assert.deepEqual(hashes(bySubject), [target], "matching is case-insensitive");
+
+  const byAuthorEmail = await api.searchCommits(dir, { query: "graph@example.com", scope: "author" });
+  assert.equal(byAuthorEmail.commits.length, 3);
+  const byAuthorName = await api.searchCommits(dir, { query: "graph test", scope: "author" });
+  assert.equal(byAuthorName.commits.length, 3);
+
+  const bodyIsNotAuthor = await api.searchCommits(dir, { query: "lobster", scope: "author" });
+  assert.deepEqual(bodyIsNotAuthor.commits, [], "the author scope ignores the message");
+  const bodyIsNotRef = await api.searchCommits(dir, { query: "lobster", scope: "ref" });
+  assert.deepEqual(bodyIsNotRef.commits, [], "the ref scope ignores the message");
+
+  const byHash = await api.searchCommits(dir, { query: target.slice(0, 7), scope: "all" });
+  assert.deepEqual(hashes(byHash), [target], "all searches the short hash");
+  assert.equal(byHash.commits[0].abbrev, target.slice(0, 7));
+
+  const byBranchRef = await api.searchCommits(dir, { query: "wave-search-ref", scope: "ref" });
+  assert.deepEqual(hashes(byBranchRef), [target]);
+  const byTagRef = await api.searchCommits(dir, { query: "search-tag-v1", scope: "ref" });
+  assert.deepEqual(hashes(byTagRef), [target]);
+  const refIsNotMessage = await api.searchCommits(dir, { query: "wave-search-ref", scope: "message" });
+  assert.deepEqual(refIsNotMessage.commits, []);
+
+  const allDefaulted = await api.searchCommits(dir, { query: "lobster" });
+  assert.equal(allDefaulted.scope, "all", "the scope defaults to all");
+  assert.deepEqual(hashes(allDefaulted), [target]);
+
+  /* A search hit must be the exact graph row shape so existing row components render it. */
+  const graph = await api.readGraph(dir, { maxCommits: 50 });
+  const row = graph.commits.find((commit) => commit.hash === target);
+  assert.deepEqual(allDefaulted.commits[0], row);
+  assert.deepEqual(Object.keys(allDefaulted.commits[0]).sort(), Object.keys(row).sort());
+
+  const none = await api.searchCommits(dir, { query: "no-such-token-anywhere" });
+  assert.deepEqual(none.commits, []);
+  assert.equal(none.hasMore, false);
+  assert.equal(none.scanned, 3);
+  assert.equal(none.capped, false);
+});
+
+test("searchCommits paginates with offset/limit and reports hasMore", async () => {
+  const dir = createScratchRepo("search-pages");
+  const hashes = [];
+  for (let index = 0; index < 5; index += 1) {
+    writeFile(path.join(dir, `file-${index}.txt`), `${index}\n`);
+    hashes.push(commitAll(dir, `shared token commit ${index}`));
+  }
+
+  const first = await api.searchCommits(dir, { query: "shared token", limit: 2 });
+  assert.deepEqual(first.commits.map((commit) => commit.hash), [hashes[4], hashes[3]]);
+  assert.equal(first.offset, 0);
+  assert.equal(first.limit, 2);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.scanned, 5);
+  assert.equal(first.capped, false);
+
+  const second = await api.searchCommits(dir, { query: "shared token", limit: 2, offset: 2 });
+  assert.deepEqual(second.commits.map((commit) => commit.hash), [hashes[2], hashes[1]]);
+  assert.equal(second.offset, 2);
+  assert.equal(second.hasMore, true);
+
+  const last = await api.searchCommits(dir, { query: "shared token", limit: 2, offset: 4 });
+  assert.deepEqual(last.commits.map((commit) => commit.hash), [hashes[0]]);
+  assert.equal(last.hasMore, false);
+
+  const beyond = await api.searchCommits(dir, { query: "shared token", limit: 2, offset: 10 });
+  assert.deepEqual(beyond.commits, []);
+  assert.equal(beyond.hasMore, false);
+});
+
+test("searchCommits scans at most SEARCH_SCAN_LIMIT commits and marks capped", async () => {
+  const hash = "a".repeat(40);
+  const record = [
+    hash,
+    "",
+    "Graph Test",
+    "graph@example.com",
+    "1700000100",
+    "Graph Test",
+    "graph@example.com",
+    "1700000100",
+    "HEAD -> main, tag: v1",
+    "needle subject",
+    "needle body",
+  ].join(FIELD);
+  const records = new Array(SEARCH_SCAN_LIMIT).fill(record);
+  const calls = [];
+  const fakeApi = createGitApi(async (argv) => {
+    calls.push([...argv]);
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel") return { stdout: "/fake/repo\n", stderr: "", code: 0 };
+    if (argv[0] === "log") return { stdout: `${records.join(NUL)}${NUL}`, stderr: "", code: 0 };
+    return { stdout: "", stderr: "", code: 0 };
+  });
+
+  const value = await fakeApi.searchCommits("/fake/repo", { query: "needle", limit: 2 });
+  assert.equal(value.isRepo, true);
+  assert.equal(value.scanned, SEARCH_SCAN_LIMIT);
+  assert.equal(value.capped, true, "hitting the scan limit is reported");
+  assert.equal(value.commits.length, 2);
+  assert.equal(value.hasMore, true);
+  assert.equal(value.commits[0].abbrev, hash.slice(0, 7));
+  assert.deepEqual(value.commits[0].refs, ["HEAD", "main", "tag: v1"]);
+
+  const logCall = calls.find((argv) => argv[0] === "log");
+  assert.deepEqual(logCall.slice(0, 2), ["log", "--all"]);
+  assert.ok(logCall.includes("--date-order"));
+  assert.equal(logCall[logCall.indexOf("-n") + 1], String(SEARCH_SCAN_LIMIT));
+  assert.equal(logCall.includes("--use-mailmap"), false);
+  const format = logCall.find((argument) => argument.startsWith("--format="));
+  assert.ok(format.includes("%H"));
+  assert.ok(format.includes("%b"), "the search format carries the body");
+
+  calls.length = 0;
+  await fakeApi.searchCommits("/fake/repo", { query: "needle", limit: 1, useMailmap: true });
+  const mailmapLog = calls.find((argv) => argv[0] === "log");
+  assert.ok(mailmapLog.includes("--use-mailmap"));
+  assert.ok(mailmapLog.find((argument) => argument.startsWith("--format=")).includes("%aN"));
+});
+
+test("searchCommits outside a repository succeeds and validates every request field", async () => {
+  const outside = await api.searchCommits(fixture.empty, { query: "  orphan  " });
+  assert.deepEqual(outside, {
+    isRepo: false,
+    query: "orphan",
+    scope: "all",
+    commits: [],
+    offset: 0,
+    limit: 50,
+    hasMore: false,
+    scanned: 0,
+    capped: false,
+  });
+
+  const badRequests = [
+    [{}, /query/],
+    [{ query: "" }, /query/],
+    [{ query: "   " }, /query/],
+    [{ query: "x".repeat(201) }, /query/],
+    [{ query: 42 }, /query/],
+    [{ query: "x", scope: "subject" }, /scope/],
+    [{ query: "x", scope: 7 }, /scope/],
+    [{ query: "x", limit: 0 }, /limit/],
+    [{ query: "x", limit: 201 }, /limit/],
+    [{ query: "x", limit: "10" }, /limit/],
+    [{ query: "x", limit: 1.5 }, /limit/],
+    [{ query: "x", offset: -1 }, /offset/],
+    [{ query: "x", offset: "0" }, /offset/],
+    [{ query: "x", offset: 1.5 }, /offset/],
+  ];
+  for (const [options, pattern] of badRequests) {
+    await assert.rejects(
+      api.searchCommits(fixture.empty, options),
+      (error) => error.code === "BAD_REQUEST" && pattern.test(error.message),
+      JSON.stringify(options),
+    );
+  }
+
+  const atLimit = await api.searchCommits(fixture.empty, { query: "x".repeat(200) });
+  assert.equal(atLimit.query.length, 200);
+});
+
+test("search route returns the contract value and validation envelopes", async () => {
+  const dir = createScratchRepo("route-search");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "Route root");
+  writeFile(path.join(dir, "b.txt"), "b\n");
+  const first = commitAll(dir, "Route needle one");
+  writeFile(path.join(dir, "c.txt"), "c\n");
+  const second = commitAll(dir, "Route needle two", "Body needle two.");
+  runGit(["branch", "route-search-branch"], dir);
+
+  const scratchHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const envelope = await post(scratchHost, SEARCH_PATH, { query: "  needle  " });
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.value.isRepo, true);
+    assert.equal(envelope.value.query, "needle", "the route trims the query");
+    assert.equal(envelope.value.scope, "all");
+    assert.equal(envelope.value.limit, 50);
+    assert.equal(envelope.value.offset, 0);
+    assert.equal(envelope.value.hasMore, false);
+    assert.equal(envelope.value.capped, false);
+    assert.equal(envelope.value.scanned, 3);
+    assert.deepEqual(envelope.value.commits.map((commit) => commit.hash), [second, first]);
+
+    const page = await post(scratchHost, SEARCH_PATH, { query: "route needle", limit: 1 });
+    assert.equal(page.ok, true);
+    assert.deepEqual(page.value.commits.map((commit) => commit.hash), [second]);
+    assert.equal(page.value.hasMore, true);
+    const secondPage = await post(scratchHost, SEARCH_PATH, { query: "route needle", limit: 1, offset: 1 });
+    assert.deepEqual(secondPage.value.commits.map((commit) => commit.hash), [first]);
+    assert.equal(secondPage.value.hasMore, false);
+
+    const byAuthor = await post(scratchHost, SEARCH_PATH, { query: "graph@example.com", scope: "author" });
+    assert.equal(byAuthor.value.commits.length, 3);
+
+    const badRequests = [
+      [{}, /query/],
+      [{ query: "  " }, /query/],
+      [{ query: "x".repeat(201) }, /query/],
+      [{ query: "x", scope: "subject" }, /scope/],
+      [{ query: "x", limit: 0 }, /limit/],
+      [{ query: "x", limit: 201 }, /limit/],
+      [{ query: "x", limit: "10" }, /limit/],
+      [{ query: "x", offset: -1 }, /offset/],
+      [{ query: "x", offset: "0" }, /offset/],
+    ];
+    for (const [body, pattern] of badRequests) {
+      const rejected = await post(scratchHost, SEARCH_PATH, body);
+      assert.equal(rejected.ok, false, JSON.stringify(body));
+      assert.equal(rejected.error.code, "BAD_REQUEST", JSON.stringify(body));
+      assert.match(rejected.error.message, pattern);
+    }
+
+    const outside = createHost({ config: undefined, defaultDirectory: fixture.empty });
+    try {
+      const notRepo = await post(outside, SEARCH_PATH, { query: "anything" });
+      assert.equal(notRepo.ok, true);
+      assert.equal(notRepo.value.isRepo, false);
+      assert.deepEqual(notRepo.value.commits, []);
+      assert.equal(notRepo.value.scanned, 0);
+      assert.equal(notRepo.value.capped, false);
+      assert.equal(notRepo.value.limit, 50);
+    } finally {
+      outside.dispose();
+    }
+  } finally {
+    scratchHost.dispose();
+  }
+});
+
+test("compareCommits working mode includes tracked, staged and untracked changes", async () => {
+  const dir = createScratchRepo("compare-working");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  writeFile(path.join(dir, "delete-me.txt"), "gone\n");
+  const base = commitAll(dir, "base");
+
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\nthree\n");
+  writeFile(path.join(dir, "staged.txt"), "staged\n");
+  runGit(["add", "staged.txt"], dir);
+  fs.rmSync(path.join(dir, "delete-me.txt"));
+  writeFile(path.join(dir, "untracked.txt"), "untracked line\n");
+  writeFile(path.join(dir, "untracked-empty.txt"), "");
+  writeFile(path.join(dir, "untracked-bin.dat"), Buffer.from([0, 1, 2, 3]));
+
+  const value = await api.compareCommits(dir, { base, working: true, head: "does-not-exist" });
+  assert.equal(value.working, true);
+  assert.equal(value.head, null, "working comparisons ignore head");
+  assert.equal(value.base, base);
+  assert.equal(value.baseAbbrev, base.slice(0, 7));
+  assert.equal(value.stats.files, value.files.length);
+  assert.equal(
+    value.stats.insertions,
+    value.files.reduce((total, file) => total + file.added, 0),
+  );
+  assert.equal(
+    value.stats.deletions,
+    value.files.reduce((total, file) => total + file.removed, 0),
+  );
+
+  const byPath = new Map(value.files.map((file) => [file.path, file]));
+  assert.deepEqual(byPath.get("tracked.txt"), { status: "M", path: "tracked.txt", oldPath: null, added: 1, removed: 0, binary: false });
+  assert.deepEqual(byPath.get("staged.txt"), { status: "A", path: "staged.txt", oldPath: null, added: 1, removed: 0, binary: false });
+  assert.deepEqual(byPath.get("delete-me.txt"), { status: "D", path: "delete-me.txt", oldPath: null, added: 0, removed: 1, binary: false });
+  assert.deepEqual(byPath.get("untracked.txt"), { status: "A", path: "untracked.txt", oldPath: null, added: 1, removed: 0, binary: false });
+  assert.deepEqual(byPath.get("untracked-empty.txt"), { status: "A", path: "untracked-empty.txt", oldPath: null, added: 0, removed: 0, binary: false });
+  assert.deepEqual(byPath.get("untracked-bin.dat"), { status: "A", path: "untracked-bin.dat", oldPath: null, added: 0, removed: 0, binary: true });
+
+  const commitForm = await api.compareCommits(dir, { base, head: base });
+  assert.deepEqual(commitForm.files, [], "the {base, head} form is unchanged");
+  assert.equal(commitForm.working, undefined);
+
+  await assert.rejects(api.compareCommits(dir, { working: true }), (error) => error.code === "BAD_REQUEST" && /base/.test(error.message));
+  await assert.rejects(api.compareCommits(dir, { base, working: "yes" }), (error) => error.code === "BAD_REQUEST" && /working/.test(error.message));
+  await assert.rejects(api.compareCommits(dir, { base: "-rf", working: true }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.compareCommits(dir, { base: "does-not-exist", working: true }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.compareCommits(fixture.empty, { base, working: true }), (error) => error.code === "NOT_A_REPO");
+});
+
+test("compare route forwards working:true and handles a repository without HEAD", async () => {
+  const dir = createScratchRepo("route-compare-working");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  writeFile(path.join(dir, "untracked.txt"), "new\n");
+
+  const scratchHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const envelope = await post(scratchHost, COMPARE_PATH, { base, working: true });
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.value.working, true);
+    assert.equal(envelope.value.head, null);
+    assert.equal(envelope.value.base, base);
+    assert.equal(envelope.value.baseAbbrev, base.slice(0, 7));
+    const byPath = new Map(envelope.value.files.map((file) => [file.path, file]));
+    assert.equal(byPath.get("tracked.txt").status, "M");
+    assert.deepEqual(byPath.get("untracked.txt"), {
+      status: "A",
+      path: "untracked.txt",
+      oldPath: null,
+      added: 1,
+      removed: 0,
+      binary: false,
+    });
+    assert.equal(envelope.value.stats.files, envelope.value.files.length);
+
+    const commitForm = await post(scratchHost, COMPARE_PATH, { base, head: base });
+    assert.equal(commitForm.ok, true);
+    assert.equal(commitForm.value.working, undefined);
+    assert.deepEqual(commitForm.value.files, []);
+
+    const missingBase = await post(scratchHost, COMPARE_PATH, { working: true });
+    assert.equal(missingBase.ok, false);
+    assert.equal(missingBase.error.code, "BAD_REQUEST");
+    assert.match(missingBase.error.message, /base/);
+    const badWorking = await post(scratchHost, COMPARE_PATH, { base, working: "yes" });
+    assert.equal(badWorking.ok, false);
+    assert.equal(badWorking.error.code, "BAD_REQUEST");
+    assert.match(badWorking.error.message, /working/);
+    const unsafeBase = await post(scratchHost, COMPARE_PATH, { base: "-rf", working: true });
+    assert.equal(unsafeBase.ok, false);
+    assert.equal(unsafeBase.error.code, "BAD_REQUEST");
+  } finally {
+    scratchHost.dispose();
+  }
+
+  const unborn = createScratchRepo("route-compare-unborn");
+  writeFile(path.join(unborn, "loose.txt"), "loose\n");
+  const unbornHost = createHost({ config: undefined, defaultDirectory: unborn });
+  try {
+    const envelope = await post(unbornHost, COMPARE_PATH, { base: "HEAD", working: true });
+    assert.equal(envelope.ok, true);
+    assert.deepEqual(envelope.value, {
+      working: true,
+      head: null,
+      base: null,
+      baseAbbrev: null,
+      stats: { files: 0, insertions: 0, deletions: 0 },
+      files: [],
+    });
+    const apiValue = await api.compareCommits(unborn, { base: "HEAD", working: true });
+    assert.deepEqual(apiValue, envelope.value);
+  } finally {
+    unbornHost.dispose();
+  }
+});
+
+test("readDiff working scope diffs against the commit and renders untracked additions", async () => {
+  const dir = createScratchRepo("diff-working");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  writeFile(path.join(dir, "remove-me.txt"), "gone\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  runGit(["rm", "-q", "remove-me.txt"], dir);
+  writeFile(path.join(dir, "untracked.txt"), "alpha\nbeta\n");
+  writeFile(path.join(dir, "empty.txt"), "");
+  writeFile(path.join(dir, "bin.dat"), Buffer.from([0, 1, 2, 3]));
+
+  const tracked = await api.readDiff(dir, { scope: "working", hash: base, path: "tracked.txt" });
+  assert.equal(tracked.binary, false);
+  assert.equal(tracked.truncated, false);
+  assert.match(tracked.patch, /^\+two$/m);
+
+  const untracked = await api.readDiff(dir, { scope: "working", hash: base, path: "untracked.txt" });
+  assert.equal(untracked.binary, false);
+  assert.match(untracked.patch, /^new file mode 100644$/m);
+  assert.match(untracked.patch, /^\+alpha$/m);
+  assert.match(untracked.patch, /^\+beta$/m);
+
+  const empty = await api.readDiff(dir, { scope: "working", hash: base, path: "empty.txt" });
+  assert.equal(empty.binary, false);
+  assert.match(empty.patch, /^diff --git /m);
+  assert.equal(/^@@/m.test(empty.patch), false, "an empty untracked file keeps zero hunks");
+
+  const deleted = await api.readDiff(dir, { scope: "working", hash: base, path: "remove-me.txt" });
+  assert.equal(deleted.binary, false);
+  assert.match(deleted.patch, /^deleted file mode 100644$/m);
+  assert.match(deleted.patch, /^-gone$/m);
+
+  const binary = await api.readDiff(dir, { scope: "working", hash: base, path: "bin.dat" });
+  assert.equal(binary.binary, true);
+  assert.equal(binary.patch, "");
+
+  await assert.rejects(api.readDiff(dir, { scope: "working", path: "tracked.txt" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(api.readDiff(dir, { scope: "working", hash: "does-not-exist", path: "tracked.txt" }), (error) => error.code === "GIT_FAILED");
+  await assert.rejects(api.readDiff(fixture.empty, { scope: "working", hash: base, path: "tracked.txt" }), (error) => error.code === "NOT_A_REPO");
+});
+
+test("diff route accepts the working scope and requires its hash", async () => {
+  const dir = createScratchRepo("route-diff-working");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  const base = commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  writeFile(path.join(dir, "untracked.txt"), "route new\n");
+
+  const scratchHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const tracked = await post(scratchHost, DIFF_PATH, { scope: "working", hash: base, file: "tracked.txt" });
+    assert.equal(tracked.ok, true);
+    assert.match(tracked.value.patch, /^\+two$/m);
+
+    const untracked = await post(scratchHost, DIFF_PATH, { scope: "working", hash: base, file: "untracked.txt" });
+    assert.equal(untracked.ok, true);
+    assert.match(untracked.value.patch, /^\+route new$/m);
+
+    const missingHash = await post(scratchHost, DIFF_PATH, { scope: "working", file: "tracked.txt" });
+    assert.equal(missingHash.ok, false);
+    assert.equal(missingHash.error.code, "BAD_REQUEST");
+    assert.match(missingHash.error.message, /hash/);
+  } finally {
+    scratchHost.dispose();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Wave 8-B: settings module wired into the host
+// ---------------------------------------------------------------------------
+
+test("graph settings: order default, initialLoad page size and maxCommits precedence", async () => {
+  const dir = createScratchRepo("settings-order");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  commitAt(dir, 1_700_000_100, "root");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "f1.txt"), "f1\n");
+  commitAt(dir, 1_700_000_300, "feature one");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "m1.txt"), "m1\n");
+  commitAt(dir, 1_700_000_200, "main one");
+  runGit(["switch", "-q", "feature"], dir);
+  writeFile(path.join(dir, "f2.txt"), "f2\n");
+  commitAt(dir, 1_700_000_500, "feature two");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "m2.txt"), "m2\n");
+  commitAt(dir, 1_700_000_400, "main two");
+  const mergeDate = gitDate(1_700_000_600);
+  runGit(["merge", "-q", "--no-ff", "feature", "-m", "merge feature"], dir, {
+    GIT_AUTHOR_DATE: mergeDate,
+    GIT_COMMITTER_DATE: mergeDate,
+  });
+
+  const subjects = (value) => value.commits.map((commit) => commit.subject);
+  const dateSubjects = subjects(await api.readGraph(dir, { maxCommits: 50, order: "date" }));
+  const topoSubjects = subjects(await api.readGraph(dir, { maxCommits: 50, order: "topo" }));
+  assert.notDeepEqual(dateSubjects, topoSubjects, "the fixture distinguishes date and topo order");
+
+  const topoHost = createHost({ config: { "repository.commits.order": "topo" }, defaultDirectory: dir });
+  try {
+    assert.deepEqual(subjects((await post(topoHost, GRAPH_PATH, {})).value), topoSubjects, "the configured order is the default");
+    assert.deepEqual(subjects((await post(topoHost, GRAPH_PATH, { order: "date" })).value), dateSubjects, "a request order still wins");
+  } finally {
+    topoHost.dispose();
+  }
+
+  const legacyOrderHost = createHost({ config: { commitOrdering: "topo" }, defaultDirectory: dir });
+  try {
+    assert.deepEqual(subjects((await post(legacyOrderHost, GRAPH_PATH, {})).value), topoSubjects, "the legacy flat alias folds in");
+  } finally {
+    legacyOrderHost.dispose();
+  }
+
+  const invalidOrderHost = createHost({ config: { "repository.commits.order": "sideways" }, defaultDirectory: dir });
+  try {
+    assert.deepEqual(subjects((await post(invalidOrderHost, GRAPH_PATH, {})).value), dateSubjects, "an unknown configured order falls back to date");
+  } finally {
+    invalidOrderHost.dispose();
+  }
+
+  /* 305 commits make the initialLoad default (300) observable. */
+  const pageDir = createScratchRepo("settings-initial-load");
+  importLinearHistory(pageDir, 305);
+  const pageOf = async (config, body = {}) => {
+    const pageHost = createHost({ config, defaultDirectory: pageDir });
+    try {
+      return (await post(pageHost, GRAPH_PATH, body)).value;
+    } finally {
+      pageHost.dispose();
+    }
+  };
+  const defaultPage = await pageOf(undefined);
+  assert.equal(defaultPage.commits.length, 300, "repository.commits.initialLoad defaults to 300");
+  assert.equal(defaultPage.truncated, true);
+  const configuredPage = await pageOf({ "repository.commits.initialLoad": 12 });
+  assert.equal(configuredPage.commits.length, 12);
+  const invalidPage = await pageOf({ "repository.commits.initialLoad": "many" });
+  assert.equal(invalidPage.commits.length, 300, "an invalid initialLoad falls back to its default");
+  const nonPositivePage = await pageOf({ "repository.commits.initialLoad": 0 });
+  assert.equal(nonPositivePage.commits.length, 300, "a non-positive initialLoad falls back to its default");
+  const legacyMax = await pageOf({ maxCommits: 4, "repository.commits.initialLoad": 12 });
+  assert.equal(legacyMax.commits.length, 4, "the legacy maxCommits host key keeps precedence");
+  const requestLimit = await pageOf({ "repository.commits.initialLoad": 12 }, { limit: 5 });
+  assert.equal(requestLimit.commits.length, 5, "a request limit overrides the configured default");
+});
+
+test("graph settings: showTags, tag-only history and reflog commits", async () => {
+  const dir = createScratchRepo("settings-refs");
+  writeFile(path.join(dir, "root.txt"), "root\n");
+  commitAll(dir, "root");
+  runGit(["switch", "-q", "-c", "tag-only"], dir);
+  writeFile(path.join(dir, "tag.txt"), "tag\n");
+  commitAll(dir, "tag only commit");
+  runGit(["tag", "v-tag-only"], dir);
+  runGit(["switch", "-q", "main"], dir);
+  runGit(["branch", "-q", "-D", "tag-only"], dir);
+  runGit(["switch", "-q", "-c", "reflog-only"], dir);
+  writeFile(path.join(dir, "reflog.txt"), "reflog\n");
+  commitAll(dir, "reflog only commit");
+  runGit(["switch", "-q", "main"], dir);
+  runGit(["branch", "-q", "-D", "reflog-only"], dir);
+
+  const graphOf = async (config) => {
+    const graphHost = createHost({ config, defaultDirectory: dir });
+    try {
+      return (await post(graphHost, GRAPH_PATH, {})).value;
+    } finally {
+      graphHost.dispose();
+    }
+  };
+
+  const defaultGraph = await graphOf(undefined);
+  assert.ok(defaultGraph.commits.some((commit) => commit.subject === "tag only commit"), "tags are walked by default");
+  assert.equal(defaultGraph.commits.some((commit) => commit.subject === "reflog only commit"), false, "reflog-only commits are off by default");
+  assert.ok(defaultGraph.refs.some((ref) => ref.type === "tag" && ref.shortName === "v-tag-only"));
+  assert.ok(defaultGraph.commits.some((commit) => commit.refs.includes("tag: v-tag-only")));
+
+  const noTags = await graphOf({ "repository.showTags": false });
+  assert.equal(noTags.commits.some((commit) => commit.subject === "tag only commit"), false, "showTags:false drops the tag walk");
+  assert.equal(noTags.refs.some((ref) => ref.type === "tag"), false);
+  assert.equal(noTags.commits.some((commit) => commit.refs.some((chip) => chip.startsWith("tag: "))), false);
+  const legacyNoTags = await graphOf({ showTags: false });
+  assert.equal(legacyNoTags.commits.some((commit) => commit.subject === "tag only commit"), false, "the legacy flat alias folds in");
+
+  const tagsOnlyReferenced = await graphOf({ "repository.showCommitsOnlyReferencedByTags": false });
+  assert.equal(tagsOnlyReferenced.commits.some((commit) => commit.subject === "tag only commit"), false);
+  assert.ok(tagsOnlyReferenced.refs.some((ref) => ref.type === "tag"), "tag refs stay when only the tag walk is disabled");
+
+  const reflog = await graphOf({ "repository.includeCommitsMentionedByReflogs": true });
+  assert.ok(reflog.commits.some((commit) => commit.subject === "reflog only commit"), "the reflog setting adds reflog-only commits");
+  assert.ok(reflog.commits.some((commit) => commit.subject === "tag only commit"), "tags stay walked too");
+
+  const invalid = await graphOf({
+    "repository.showTags": 7,
+    "repository.showCommitsOnlyReferencedByTags": 7,
+    "repository.includeCommitsMentionedByReflogs": 7,
+  });
+  assert.deepEqual(invalid.commits.map((commit) => commit.subject), defaultGraph.commits.map((commit) => commit.subject));
+  assert.deepEqual(invalid.refs, defaultGraph.refs);
+});
+
+test("graph settings: onlyFollowFirstParent, showRemoteBranches and showRemoteHeads", async () => {
+  const dir = createScratchRepo("settings-first-parent");
+  writeFile(path.join(dir, "base.txt"), "base\n");
+  commitAll(dir, "base");
+  runGit(["switch", "-q", "-c", "feature"], dir);
+  writeFile(path.join(dir, "feature.txt"), "feature\n");
+  commitAll(dir, "feature commit");
+  runGit(["switch", "-q", "main"], dir);
+  writeFile(path.join(dir, "main.txt"), "main\n");
+  commitAll(dir, "main commit");
+  runGit(["merge", "-q", "--no-ff", "feature", "-m", "merge feature"], dir, nextDates());
+  /* Deleting the side branch makes the merge's second parent the only path to it. */
+  runGit(["branch", "-q", "-D", "feature"], dir);
+
+  const graphOf = async (config, repo = dir) => {
+    const graphHost = createHost({ config, defaultDirectory: repo });
+    try {
+      return (await post(graphHost, GRAPH_PATH, {})).value;
+    } finally {
+      graphHost.dispose();
+    }
+  };
+
+  const full = await graphOf(undefined);
+  assert.ok(full.commits.some((commit) => commit.subject === "feature commit"));
+  const firstParent = await graphOf({ "repository.onlyFollowFirstParent": true });
+  assert.equal(firstParent.commits.some((commit) => commit.subject === "feature commit"), false, "--first-parent hides side-branch commits");
+  assert.ok(firstParent.commits.some((commit) => commit.subject === "merge feature"));
+  assert.ok(firstParent.commits.some((commit) => commit.subject === "main commit"));
+  assert.ok(firstParent.commits.some((commit) => commit.subject === "base"));
+  const invalidFirstParent = await graphOf({ "repository.onlyFollowFirstParent": 7 });
+  assert.deepEqual(invalidFirstParent.commits.map((commit) => commit.subject), full.commits.map((commit) => commit.subject));
+
+  /* A clone carries refs/remotes/origin/HEAD, so both remote settings are observable. */
+  const source = createScratchRepo("settings-remote-source");
+  writeFile(path.join(source, "a.txt"), "a\n");
+  commitAll(source, "remote base");
+  const bare = createBareRemote("settings-remote.git");
+  runGit(["remote", "add", "origin", bare], source);
+  runGit(["push", "-q", "-u", "origin", "main"], source);
+  const work = cloneFromRemote(bare, "settings-remote-work");
+
+  const remoteRefs = (value) => value.refs.filter((ref) => ref.type === "remote");
+  const remoteHeadChips = (value) => value.commits.flatMap((commit) => commit.refs).filter((chip) => /^[^/]+\/HEAD$/.test(chip));
+
+  const remoteGraph = await graphOf(undefined, work);
+  assert.ok(remoteRefs(remoteGraph).some((ref) => ref.shortName === "origin/main"));
+  assert.ok(remoteRefs(remoteGraph).some((ref) => ref.shortName === "origin/HEAD"));
+  assert.ok(remoteHeadChips(remoteGraph).length > 0, "the remote HEAD chip is shown by default");
+
+  const withoutRemoteBranches = await graphOf({ "repository.showRemoteBranches": false }, work);
+  assert.equal(withoutRemoteBranches.refs.some((ref) => ref.type === "remote"), false);
+  assert.equal(withoutRemoteBranches.commits.some((commit) => commit.refs.some((chip) => chip.includes("origin/"))), false);
+  const legacyWithoutRemotes = await graphOf({ showRemoteBranches: false }, work);
+  assert.equal(legacyWithoutRemotes.refs.some((ref) => ref.type === "remote"), false, "the legacy host key still works");
+
+  const withoutRemoteHeads = await graphOf({ "repository.showRemoteHeads": false }, work);
+  assert.equal(remoteRefs(withoutRemoteHeads).some((ref) => ref.shortName.endsWith("/HEAD")), false);
+  assert.ok(remoteRefs(withoutRemoteHeads).some((ref) => ref.shortName === "origin/main"), "other remote branches stay");
+  assert.equal(remoteHeadChips(withoutRemoteHeads).length, 0, "remote HEAD decoration chips are filtered too");
+
+  const invalidRemote = await graphOf({ "repository.showRemoteBranches": 7, "repository.showRemoteHeads": 7 }, work);
+  assert.ok(remoteRefs(invalidRemote).some((ref) => ref.shortName === "origin/HEAD"), "invalid values fall back to defaults");
+});
+
+test("graph settings: showStashes canonical key", async () => {
+  const dir = createScratchRepo("settings-stash");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  runGit(["stash", "push", "-q", "-m", "settings stash"], dir);
+
+  const graphOf = async (config) => {
+    const graphHost = createHost({ config, defaultDirectory: dir });
+    try {
+      return (await post(graphHost, GRAPH_PATH, {})).value;
+    } finally {
+      graphHost.dispose();
+    }
+  };
+
+  const shown = await graphOf(undefined);
+  assert.equal(shown.stashes.length, 1);
+  assert.ok(shown.refs.some((ref) => ref.type === "stash" && ref.shortName === "stash@{0}"));
+
+  const hidden = await graphOf({ "repository.showStashes": false });
+  assert.equal("stashes" in hidden, false);
+  assert.equal(hidden.refs.some((ref) => ref.type === "stash"), false);
+
+  const invalid = await graphOf({ "repository.showStashes": 7 });
+  assert.equal(invalid.stashes.length, 1, "an invalid value falls back to true");
+});
+
+test("uncommitted settings: repository.showUntrackedFiles", async () => {
+  const dir = createScratchRepo("settings-untracked");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  commitAll(dir, "base");
+  writeFile(path.join(dir, "tracked.txt"), "one\ntwo\n");
+  runGit(["add", "tracked.txt"], dir);
+  writeFile(path.join(dir, "untracked.txt"), "new\n");
+
+  const full = await api.readUncommitted(dir);
+  assert.equal(full.counts.untracked, 1);
+  const without = await api.readUncommitted(dir, { includeUntracked: false });
+  assert.deepEqual(without.untracked, []);
+  assert.equal(without.counts.untracked, 0);
+  assert.equal(without.counts.staged, 1, "staged entries stay");
+
+  const uncommittedOf = async (config) => {
+    const uncommittedHost = createHost({ config, defaultDirectory: dir });
+    try {
+      return (await post(uncommittedHost, UNCOMMITTED_PATH, {})).value;
+    } finally {
+      uncommittedHost.dispose();
+    }
+  };
+  assert.deepEqual((await uncommittedOf(undefined)).untracked, [{ status: "A", path: "untracked.txt", oldPath: null }]);
+  const hidden = await uncommittedOf({ "repository.showUntrackedFiles": false });
+  assert.deepEqual(hidden.untracked, []);
+  assert.equal(hidden.counts.untracked, 0);
+  assert.equal(hidden.counts.staged, 1);
+  const legacyHidden = await uncommittedOf({ showUntrackedFiles: false });
+  assert.deepEqual(legacyHidden.untracked, [], "the legacy flat alias folds in");
+  const invalid = await uncommittedOf({ "repository.showUntrackedFiles": 7 });
+  assert.equal(invalid.counts.untracked, 1, "an invalid value falls back to true");
+});
+
+test("fetch action prune flags are opt-in and never default to on", async () => {
+  const calls = [];
+  const fakeApi = createGitApi(async (argv) => {
+    calls.push([...argv]);
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel") return { stdout: "/fake/repo\n", stderr: "", code: 0 };
+    return { stdout: "", stderr: "", code: 0 };
+  });
+  const lastFetch = () => calls.filter((argv) => argv[0] === "fetch").pop();
+
+  const plain = await fakeApi.performAction("/fake/repo", "fetch", {});
+  assert.deepEqual(lastFetch(), ["fetch"]);
+  assert.equal(plain.message, "Fetched from all remotes.");
+  await fakeApi.performAction("/fake/repo", "fetch", { remote: "origin" });
+  assert.deepEqual(lastFetch(), ["fetch", "origin"]);
+  await fakeApi.performAction("/fake/repo", "fetch", { prune: true });
+  assert.deepEqual(lastFetch(), ["fetch", "--prune"]);
+  await fakeApi.performAction("/fake/repo", "fetch", { pruneTags: true });
+  assert.deepEqual(lastFetch(), ["fetch", "--prune-tags"]);
+  const both = await fakeApi.performAction("/fake/repo", "fetch", { remote: "origin", prune: true, pruneTags: true });
+  assert.deepEqual(lastFetch(), ["fetch", "--prune", "--prune-tags", "origin"]);
+  assert.equal(both.message, 'Fetched from "origin" with --prune --prune-tags.');
+  await fakeApi.performAction("/fake/repo", "fetch", { prune: "true", pruneTags: 1 });
+  assert.deepEqual(lastFetch(), ["fetch"], "only strict booleans opt in");
+  await assert.rejects(fakeApi.performAction("/fake/repo", "fetch", { remote: "-x" }), (error) => error.code === "BAD_REQUEST");
+  await assert.rejects(fakeApi.performAction("/fake/repo", "fetch", { remote: "a..b" }), (error) => error.code === "BAD_REQUEST");
+});
+
+test("fetch route applies fetchAndPrune settings and explicit overrides", async () => {
+  const dir = createScratchRepo("settings-fetch");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  const bare = createBareRemote("settings-fetch.git");
+  runGit(["remote", "add", "origin", bare], dir);
+  runGit(["push", "-q", "-u", "origin", "main"], dir);
+
+  const fetchMessage = async (config, body = {}) => {
+    const fetchHost = createHost({ config, defaultDirectory: dir });
+    try {
+      const envelope = await post(fetchHost, ACTION_PATH, { action: "fetch", ...body });
+      assert.equal(envelope.ok, true, JSON.stringify(envelope.error));
+      return envelope.value.message;
+    } finally {
+      fetchHost.dispose();
+    }
+  };
+
+  assert.equal(await fetchMessage(undefined), "Fetched from all remotes.");
+  assert.match(await fetchMessage({ "repository.fetchAndPrune": true }), /with --prune\.$/);
+  assert.equal(
+    await fetchMessage({ "repository.fetchAndPrune": true }, { prune: false }),
+    "Fetched from all remotes.",
+    "an explicit false overrides the configured default",
+  );
+  assert.equal(await fetchMessage(undefined, { prune: true }), "Fetched from all remotes with --prune.");
+  assert.match(await fetchMessage({ "repository.fetchAndPrune": true, "repository.fetchAndPruneTags": true }), /with --prune --prune-tags\.$/);
+  assert.match(
+    await fetchMessage({ "repository.fetchAndPrune": true, "repository.fetchAndPruneTags": true }, { pruneTags: false }),
+    /with --prune\.$/,
+  );
+  assert.equal(
+    await fetchMessage({ "repository.fetchAndPrune": 7, "repository.fetchAndPruneTags": 7 }),
+    "Fetched from all remotes.",
+    "invalid values fall back to false",
+  );
+  assert.match(await fetchMessage({ fetchAndPrune: true }), /with --prune\.$/, "the legacy flat alias folds in");
+});
+
+test("readGraph maps the repository settings onto the git log argv", async () => {
+  const calls = [];
+  const fakeRun = async (argv) => {
+    calls.push([...argv]);
+    const ok = (stdout) => ({ stdout, stderr: "", code: 0 });
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel") return ok("/fake/repo\n");
+    if (argv[0] === "rev-parse" && argv[1] === "--abbrev-ref") return ok("main\n");
+    if (argv[0] === "rev-parse") return ok(`${"a".repeat(40)}\n`);
+    return ok("");
+  };
+  const fakeApi = createGitApi(fakeRun);
+  const logCall = () => calls.filter((argv) => argv[0] === "log").pop();
+
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2 });
+  assert.equal(logCall().includes("--first-parent"), false);
+  assert.equal(logCall().includes("--reflog"), false);
+  assert.ok(logCall().includes("--tags"));
+  assert.ok(logCall().includes("--remotes"));
+
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, firstParent: true, includeReflogCommits: true });
+  assert.ok(logCall().includes("--first-parent"));
+  assert.ok(logCall().includes("--reflog"));
+
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, showTags: false });
+  assert.equal(logCall().includes("--tags"), false);
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, showCommitsOnlyReferencedByTags: false });
+  assert.equal(logCall().includes("--tags"), false);
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, showRemoteBranches: false });
+  assert.equal(logCall().includes("--remotes"), false);
 });
