@@ -225,6 +225,9 @@ const CONTRACT_KEYS = [
   "column.author",
   "column.commit",
   "column.resize",
+  "column.graph",
+  "column.description",
+  "review.staleHost",
   "menu.archive",
   "archive.title",
   "archive.ref",
@@ -405,7 +408,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
-        "prRequest, prValueOf, prUrlChoices, openExternalUrl, reviewScopesRequest, reviewEndRequest, " +
+        "graphWidthVar, prRequest, prValueOf, prUrlChoices, openExternalUrl, reviewScopesRequest, reviewEndRequest, " +
         "reviewEndAllRequest, reviewScopeLabel, normalizeReviewScopes, repoConfigRequest, repoConfigValueOf, " +
         "conflictLabel, PullRequestDialog, ReviewManagerPanel, RepoConfigPanel }",
     ),
@@ -1237,6 +1240,11 @@ test("UncommittedRow renders the dashed synthetic row with localized counts", ()
   const text = collectElements(tree).map((element) => element.children.join("")).join(" ");
   assert.match(text, /uncommitted\.title/);
   assert.match(text, /uncommitted\.counts\(1,1,1\)/);
+  const cells = collectElements(tree).filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
+  assert.deepEqual(cells.map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date", "author", "commit"], "the synthetic row uses the same column structure");
+  assert.equal(collectElements(cells[0]).filter((element) => element.type !== "span" || element.props.className).length, 1, "the graph cell stays empty");
+  assert.ok(collectElements(cells[1]).some((element) => String(element.props.className || "").includes("dgg-subject")));
+  for (const empty of cells.slice(2)) assert.equal(collectElements(empty).length, 1, "Date/Author/Commit stay empty");
   tree.props.onClick();
   assert.equal(selected.length, 1);
 });
@@ -3063,23 +3071,36 @@ test("Toolbar exposes the three column visibility checkboxes", () => {
   assert.deepEqual(toggled, ["author", "date", "hash"]);
 });
 
-test("CommitRow omits hidden meta segments", () => {
+test("CommitRow renders the five table cells and honours hidden columns", () => {
   const { CommitRow } = loadInternals();
-  const commit = { hash: "h1", abbrev: "h1", subject: "Subject", parents: [], refs: [], authorName: "Ann", authorTime: 1700000000 };
-  const segmentsOf = (visibility) => {
-    const tree = CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), metaVisibility: visibility });
-    const meta = collectElements(tree).find((element) => String(element.props.className || "").includes("dgg-meta"));
-    return collectElements(meta)
-      .filter((element) => String(element.props.className || "").includes("dgg-meta-col"))
-      .map((element) => (((String(element.props.className || "").match(/dgg-meta-(date|author|commit)/) || [])[1] || "?") + ":" + element.children.join("")));
-  };
-  const all = segmentsOf(undefined);
-  assert.equal(all.length, 3);
-  assert.match(all[0], /^date:/, "Date is the first (header-aligned) segment");
-  assert.equal(all[1], "author:Ann");
-  assert.equal(all[2], "commit:h1");
-  assert.deepEqual(segmentsOf({ author: false, date: false, hash: false }), []);
-  assert.equal(segmentsOf({ hash: false, date: false }).some((segment) => segment.endsWith("h1")), false);
+  const commit = { hash: "h1", abbrev: "h1", subject: "Subject", parents: [], refs: ["main"], authorName: "Ann", authorTime: 1700000000 };
+  const render = (visibility) => collectElements(CommitRow({
+    t: (key) => key,
+    commit,
+    row: { lane: 0, edges: [] },
+    laneCount: 1,
+    refIndex: new Map(),
+    metaVisibility: visibility,
+  }));
+  const cellsOf = (elements) => elements
+    .filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"))
+    .map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]);
+  assert.deepEqual(cellsOf(render(undefined)), ["graph", "desc", "date", "author", "commit"], "single-line row in header order");
+  assert.deepEqual(cellsOf(render({ date: false })), ["graph", "desc", "author", "commit"]);
+  assert.deepEqual(cellsOf(render({ author: false, hash: false })), ["graph", "desc", "date"]);
+  const all = render(undefined);
+  assert.equal(richTextOf(all.find((element) => String(element.props.className || "").includes("dgg-cell-author"))), "Ann");
+  assert.equal(all.find((element) => String(element.props.className || "").includes("dgg-cell-commit")).children.join(""), "h1");
+  const desc = all.find((element) => String(element.props.className || "").includes("dgg-cell-desc"));
+  const subject = collectElements(desc).find((element) => String(element.props.className || "").includes("dgg-subject"));
+  assert.match(subject.props.className, /dgg-cell-text/, "the subject ellipsizes inside the description cell");
+  assert.equal(subject.props.title, "Subject");
+  assert.match(String(desc.props.className), /dgg-cell-desc/);
+  // The chips live inline before the subject.
+  const chips = collectElements(desc).find((element) => String(element.props.className || "").includes("dgg-chips-inline"));
+  assert.ok(chips);
+  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*min-width:0/);
+  assert.match(SOURCE, /\.dgg-cell-text\{[^}]*text-overflow:ellipsis/);
 });
 
 // ── wave 7: file tree ───────────────────────────────────────────────────────
@@ -4439,7 +4460,7 @@ test("reference labels reorder tags to the right and merge local/remote chips", 
     presentation: { referenceLabelAlignment: "Branches (on the left) & Tags (on the right)", combineLocalAndRemoteBranchLabels: true },
   });
   const refChips = collectElements(row).find((element) => typeof element.type === "function" && element.type.name === "RefChips");
-  assert.equal(refChips.props.tagsOnRight, true);
+  assert.equal(refChips.props.tagsOnRight, undefined, "list rows render their chips inline before the subject");
   assert.deepEqual(Array.from(refChips.props.chips, (chip) => chip.label), ["HEAD", "main (origin/main)", "origin/release", "v1.0"], "branches first, tags last");
 
   const detailCommit = {
@@ -4919,7 +4940,7 @@ test("column width helpers clamp, resize, reset and serialize", () => {
     clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars,
     normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths,
   } = loadInternals();
-  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 96, author: 132, commit: 78 });
+  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 140, author: 112, commit: 76 });
   assert.deepEqual(plain(COLUMN_WIDTH_RANGES), { date: [48, 200], author: [64, 260], commit: [64, 220] });
   assert.equal(COLUMN_WIDTH_STORAGE_KEY, "dsh-git-graph:column-widths:v1");
 
@@ -4932,15 +4953,20 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.equal(clampColumnWidth("commit", 100), 100);
   assert.equal(clampColumnWidth("commit", 77.6), 78, "rounded");
   assert.equal(clampColumnWidth("bogus", 100), 0);
-  assert.equal(clampColumnWidth("date", Number.NaN), 96, "invalid px falls back to the default");
+  assert.equal(clampColumnWidth("date", Number.NaN), 140, "invalid px falls back to the default");
 
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 146, author: 132, commit: 78 });
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 96, author: 132, commit: 64 }, "clamped low");
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 96, author: 260, commit: 78 }, "clamped high");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 190, author: 112, commit: 76 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 140, author: 112, commit: 64 }, "clamped low");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 140, author: 260, commit: 76 }, "clamped high");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "bogus", 50)), plain(COLUMN_WIDTH_DEFAULTS));
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", Number.NaN)), plain(COLUMN_WIDTH_DEFAULTS));
-  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 132, commit: 100 });
-  assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 78 });
+  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 112, commit: 100 });
+  assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 76 });
+  const { graphWidthVar } = loadInternals();
+  assert.deepEqual(plain(graphWidthVar(1)), { "--dgg-graph-w": "16px" });
+  assert.deepEqual(plain(graphWidthVar(3)), { "--dgg-graph-w": "44px" });
+  assert.deepEqual(plain(graphWidthVar(99)), { "--dgg-graph-w": "198px" }, "lanes are capped at MAX_LANES");
+  assert.deepEqual(plain(graphWidthVar(0)), { "--dgg-graph-w": "16px" });
   assert.deepEqual(plain(columnWidthVars({ date: 100, author: 140, commit: 80 })), {
     "--dgg-col-date": "100px",
     "--dgg-col-author": "140px",
@@ -4984,8 +5010,13 @@ test("column header renders draggable handles and the list applies CSS variables
     onReset: (column) => events.push(["reset", column]),
   }));
   const handles = header.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle"));
-  assert.equal(handles.length, 3, "one handle per column");
-  assert.deepEqual(header.filter((element) => String(element.props.className || "").includes("dgg-colhead-cell")).map((element) => String(element.props.className || "").match(/dgg-colhead-(date|author|commit)/)[1]), ["date", "author", "commit"]);
+  assert.equal(handles.length, 3, "handles only on Date/Author/Commit");
+  const headerCells = header.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
+  assert.deepEqual(headerCells.map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date", "author", "commit"]);
+  const labelTexts = headerCells.map((element) => collectElements(element).filter((child) => String(child.props.className || "").includes("dgg-colhead-label")).map((child) => child.children.join("")).join(""));
+  assert.deepEqual(labelTexts, ["column.graph", "column.description", "column.date", "column.author", "column.commit"]);
+  const cellsWithHandles = headerCells.filter((element) => collectElements(element).some((child) => String(child.props.className || "").includes("dgg-colhead-handle"))).length;
+  assert.equal(cellsWithHandles, 3, "the graph/description cells have no resize handle");
   assert.equal(handles[0].props.role, "separator");
   assert.equal(handles[0].props["aria-orientation"], "vertical");
   assert.equal(handles[0].props["aria-label"], "column.resize: column.date");
@@ -5009,10 +5040,13 @@ test("column header renders draggable handles and the list applies CSS variables
   handles[0].props.onPointerUp({ currentTarget: { releasePointerCapture: (id) => capture.push(["release", id]) } });
   assert.deepEqual(capture.at(-1), ["release", 7]);
   assert.deepEqual(events.at(-1), ["end", "date"]);
-  // Hidden columns are not rendered; an all-hidden header renders nothing.
+  // Hidden columns remove both the header cell and its handle; Graph/Description stay.
   const hidden = collectElements(ColumnHeader({ t: (key) => key, columns: { date: true, author: false, hash: false } }));
   assert.equal(hidden.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 1);
-  assert.equal(ColumnHeader({ t: (key) => key, columns: { date: false, author: false, hash: false } }), null);
+  assert.deepEqual(hidden.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date"]);
+  const noColumns = collectElements(ColumnHeader({ t: (key) => key, columns: { date: false, author: false, hash: false } }));
+  assert.equal(noColumns.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 0);
+  assert.deepEqual(noColumns.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc"]);
 
   // The list container carries the CSS variables that header and rows share.
   const graphValue = {
@@ -5030,12 +5064,22 @@ test("column header renders draggable handles and the list applies CSS variables
   const { GitGraphBody: Body } = loadInternals(undefined, react);
   const body = collectElements(Body({ sessionId: "session-1", t: (key) => key }));
   const listwrap = body.find((element) => String(element.props.className || "").includes("dgg-listwrap"));
-  assert.deepEqual(plain(listwrap.props.style), plain(columnWidthVars(COLUMN_WIDTH_DEFAULTS)));
+  assert.deepEqual(plain(listwrap.props.style), { ...columnWidthVars(COLUMN_WIDTH_DEFAULTS), "--dgg-graph-w": "16px" }, "the list container carries the column and graph widths");
+  const commitList = body.find((element) => typeof element.type === "function" && element.type.name === "CommitList");
+  assert.ok(commitList, "the body renders the commit list");
+  const listElements = collectElements(commitList.type(commitList.props));
+  const list = listElements.find((element) => String(element.props.className || "").includes("dgg-list"));
+  assert.equal(list.props.style["--dgg-graph-w"], "16px", "rows share the same graph cell width");
+  const rowElements = collectElements(list).filter((element) => typeof element.type === "function" && element.type.name === "CommitRow");
+  assert.equal(rowElements.length, 1, "the list renders its commit row");
+  const rowCells = collectElements(rowElements[0].type(rowElements[0].props)).filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
+  assert.deepEqual(rowCells.map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date", "author", "commit"]);
   const headerInBody = body.find((element) => typeof element.type === "function" && element.type.name === "ColumnHeader");
   assert.ok(headerInBody, "the list renders the header");
   assert.equal(typeof headerInBody.props.onResizeMove, "function");
   assert.match(SOURCE, /touch-action:none/);
   assert.match(SOURCE, /columnWidthVars\(columnWidths\)/);
+  assert.match(SOURCE, /\.dgg-colhead\{[^}]*position:sticky/, "the header sticks to the top of the scrolling list");
   assert.match(SOURCE, /readStoredColumnWidths\(safeClientStorage\(\)\)/);
   assert.match(SOURCE, /writeStoredColumnWidths\(safeClientStorage\(\), columnWidthsRef\.current\)/);
 });
@@ -5082,7 +5126,7 @@ test("avatars render when enabled and fall back to initialed circles", () => {
   assert.ok(avatarElement, "the commit row shows an avatar when enabled");
   assert.equal(avatarElement.props.url, "https://example.test/a.png");
   assert.equal(avatarElement.props.email, "ann@x");
-  assert.equal(avatarElement.props.size, 22);
+  assert.equal(avatarElement.props.size, 20, "the row avatar sits in the Author cell");
   const withoutAvatar = collectElements(CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), presentation: { avatars: false } }));
   assert.equal(withoutAvatar.some((element) => typeof element.type === "function" && element.type.name === "Avatar"), false, "disabled keeps today's markup");
 
@@ -5531,4 +5575,20 @@ test("PR, review-management and repo-config wiring drives the routes and refresh
   assert.equal(enabledPr.props.disabled, false);
   assert.ok(withRemote.some((element) => element.type === "button" && element.children.join("") === "menu.reviewManager"));
   assert.ok(withRemote.some((element) => element.type === "button" && element.children.join("") === "menu.repoConfig"));
+});
+
+test("ReviewManagerPanel explains an outdated host when scopes are unsupported", () => {
+  const { ReviewManagerPanel } = loadInternals();
+  const tree = collectElements(ReviewManagerPanel({
+    t: (key) => key,
+    state: { status: "error", value: null, error: 'invalid review action: "scopes"', code: "BAD_REQUEST" },
+    onRefresh() {},
+  }));
+  assert.ok(tree.some((element) => element.children.join("") === "review.staleHost"), "the restart hint replaces the raw error");
+  const text = tree.map((element) => element.children.join("")).join(" | ");
+  assert.equal(text.includes('invalid review action: "scopes"'), false, "the raw host error is not shown");
+  assert.equal(tree.some((element) => element.props.role === "alert"), false);
+  // A different BAD_REQUEST still shows the normal inline error.
+  const other = collectElements(ReviewManagerPanel({ t: (key) => key, state: { status: "error", value: null, error: "bad thing", code: "BAD_REQUEST" }, onRefresh() {} }));
+  assert.ok(other.some((element) => element.props.role === "alert"));
 });
