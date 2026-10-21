@@ -1652,6 +1652,40 @@ test("the uncommitted pane expands inline under its synthetic row", () => {
   assert.equal(closes, 1);
 });
 
+test("commit details split into commit-info and changed-files columns", () => {
+  const { DetailView } = loadInternals();
+  const props = {
+    t: (key) => key,
+    commit: {
+      hash: "h", abbrev: "h", subject: "subject", parents: ["p"], refs: [], body: "message",
+      authorName: "A", authorEmail: "a@e", authorTime: 0, committerName: "A", committerEmail: "a@e", committerTime: 0,
+      files: [{ status: "M", path: "lib/a.js", added: 1, removed: 1 }], stats: { files: 1, insertions: 1, deletions: 1 },
+    },
+    refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null, copy: { state: "idle", text: "" },
+    sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {}, onCopy() {}, onRefMenu() {},
+  };
+  const elements = collectElements(DetailView(props));
+  const cols = elements.find((element) => String(element.props.className || "").split(" ").includes("dgg-detail-cols"));
+  assert.ok(cols, "the detail renders a two-column grid");
+  const main = elements.find((element) => String(element.props.className || "").split(" ").includes("dgg-detail-main"));
+  const files = elements.find((element) => String(element.props.className || "").split(" ").includes("dgg-detail-filescol"));
+  assert.ok(main, "left column: commit information");
+  assert.ok(files, "right column: changed files");
+  // Order: commit info first, files second (grid columns left → right).
+  const order = [main, files].map((column) => cols.children.indexOf(column));
+  assert.deepEqual(order, [0, 1]);
+  // The subject, metadata and actions live in the left column; the file section in the right one.
+  const mainText = collectElements(main).map((element) => (typeof element.children?.[0] === "string" ? element.children[0] : "")).join(" ");
+  assert.ok(collectElements(main).some((element) => String(element.props.className || "").includes("dgg-subject-lg")), "the subject heads the left column");
+  assert.ok(collectElements(main).some((element) => String(element.props.className || "").includes("dgg-body")), "the message body stays on the left");
+  assert.match(mainText, /action\.checkoutCommit/);
+  assert.ok(collectElements(files).some((element) => element.children?.[0] === "detail.files"), "the file section is on the right");
+  // Wide sidebars: two equal columns through a container query; narrow ones stack.
+  assert.match(SOURCE, /@container \(min-width: 640px\)\{\.dgg-detail-cols\{grid-template-columns:minmax\(0, 1fr\) minmax\(0, 1fr\)\}\}/);
+  assert.match(SOURCE, /\.dgg-detail-inline\{[^}]*container-type:inline-size/);
+});
+
 test("DetailView renders a close control for inline details", () => {
   const { DetailView } = loadInternals();
   let closes = 0;
