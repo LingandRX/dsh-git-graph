@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **197** 个用例全绿，只增不减）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **303** 个用例全绿，只增不减）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -244,7 +244,7 @@
 - [x] `graphStyle`：`rounded` / `angular`（`lanePath` 增加直角分支）
 - [x] `graphColours`：自定义 lane 调色板（`cordis.patch.yml` 数组）
 - [x] 签名状态：`git log --format=%G?` 在详情显示 verified/unverified
-- [ ] emoji shortcode：`:smile:` → 😄（内置 10 个**已实现**）；`customEmojiShortcodeMappings` 自定义映射**未做** ← 唯一开放子项
+- [x] emoji shortcode：`:smile:` → 😄（内置 10 个）+ `customEmojiShortcodeMappings` 自定义映射（wave 8：`presentation.emojiMappings` 由客户端合并，覆盖内置）
 - [x] mailmap / issue 链接（issue URL 模板 → 提交正文中的编号变链接）
 - [x] 快捷键：`Ctrl+H` 回 HEAD、`Ctrl+R` 刷新（需确认 DSH 侧栏快捷键注册方式）
 - **验收**：每项独立可开关；`angular` 与 `rounded` 快照测试各 1；设置项写进 `cordis.patch.yml` 并有默认值。
@@ -275,6 +275,51 @@
 - [x] `pushToMultipleRemotes`（parity「远端」行）
 - 说明：`git archive`、服务端全量搜索、工作区改动与指定提交对比、glob 过滤、头像、PR 集成等
   已在 `docs/parity.md` 第五节显式声明为非目标/残余，并写明理由。
+
+## Wave 8：消除第五节残余（2026-10-21）
+
+> 来源：`docs/parity.md` 第五节原本列出的 5 项"残余差异"。契约见 [`wave8-contract.md`](./wave8-contract.md)。
+
+### [x] TODO-22 服务端全量提交搜索
+
+- `lib/git.js` `searchCommits()`：一次 `git log --all -n 20000` 扫描，`all/message/author/ref` 四类 facet，
+  offset/limit 分页，`scanned`/`capped` 上报；非仓库返回成功值。
+- `POST /api/dsh-git-graph/search`：query 非空 ≤200、scope 白名单、limit 1–200、offset ≥0。
+- 客户端 Find 栏"全部历史"模式：300ms 防抖、追加分页、扫描上限提示、错误重试、AbortController 取消。
+- 验收：host 真实仓库 facet/分页/capped 用例 + 客户端请求体与渲染用例 + 交叉验证（客户端构造的 body 喂回真实路由）。
+
+### [x] TODO-23 自定义分支 glob 过滤
+
+- 客户端 `compileGlob`：`*`（不跨 `/`）、`**`、`?`、`[abc]`、`[!abc]`、前导 `!` 取反；非法模式就地报错且不生效。
+- 语义：有 glob 且选择为"全部"时作为过滤器生效；显式选择时取并集；零匹配给出空状态并跳过请求。
+- `presentation.customBranchGlobPatterns`（`[{name, glob}]`）预填输入。
+- 验收：matcher 表、并集/取反/零匹配/非法模式用例 + 请求体断言。
+
+### [x] TODO-24 工作区改动 ↔ 指定提交对比
+
+- `POST /compare` 接受 `{base, working:true}`：已跟踪 staged+unstaged + 未跟踪（`A`）一并返回；未出生 HEAD 返回空对比。
+- `POST /diff` 新增 `working` scope：按 base 提交与工作区对比；未跟踪文件返回全新增 patch（空文件零 hunk、二进制标记）。
+- 客户端：提交菜单"与工作区对比"、未提交面板"与 HEAD 对比"；对比视图隐藏 swap、文件行用 working diff。
+- 验收：host 用例（修改/暂存/未跟踪/二进制/空文件/未出生 HEAD）+ 客户端请求体与视图用例 + 真实仓库探针。
+
+### [x] TODO-25 快捷键：可配置 + 全局作用域
+
+- `keyboardShortcut.find/refresh/scrollToHead/scrollToStash` 由 presentation 下发并重映射；
+  匹配规则：`CTRL/CMD` 二选一、单修饰键必须精确、alt/shift 精确、`UNASSIGNED` 永不匹配。
+- Ctrl/Cmd+↑↓：详情视图父子提交导航（Shift 走合并的第二父/下一子）。
+- `globalShortcuts`（默认 false）：document 级捕获监听，最后挂载的面板生效、可编辑目标忽略、卸载即移除。
+- 验收：`matchShortcut`/`shortcutFor` 表、父子导航表、fake-document 挂载/卸载与 preventDefault 用例。
+
+### [x] TODO-26 上游 110 项设置逐项对齐
+
+- `lib/settings.js`：110 键（81 canonical + 29 别名）、别名折叠（canonical 优先）、类型强制、非法/未知上报、
+  `parseShortcut`、29 键 presentation；`SETTINGS` 每项带 `wiring`（mapped/vscode-only/out-of-scope）与理由。
+- host 接线：排序/初始页大小、标签/远端/远端 HEAD/stash 可见性、`--first-parent`、`--reflog`、mailmap、
+  未跟踪可见性、`fetch --prune`/`--prune-tags`（默认关闭，与上游一致）。
+- client 消费：日期类型/格式、列显隐、文件视图/紧凑目录、自动居中、引用标签对齐/合并、弱化行、自定义 emoji、
+  markdown 子集、对话框默认、右键菜单可见性、增强无障碍、仓库下拉排序、分页（initialLoad/loadMore/自动加载）。
+- 逐键处置表：[`settings-parity.md`](./settings-parity.md)。
+- 验收：键数/别名目标/折叠/强制/上报/presentation/快捷键/docs 一致性测试；host 每项设置的默认值+覆盖+非法回退用例。
 
 ## 非目标（明确不做）
 
