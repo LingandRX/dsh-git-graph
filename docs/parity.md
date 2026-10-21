@@ -10,7 +10,7 @@
 | 上游命令 | `package.json` → `contributes.commands`（**10** 个） |
 | 上游 Git 能力 | `src/dataSource.ts` 的 `public` 方法（**51** 个） |
 | 上游快捷键 | `README.md` 的 Keyboard Shortcuts 段 |
-| 我们的能力 | `lib/git.js` 的 9 个读方法 + `performAction` 的 32 个 action；`lib/index.js` 的 9 条路由；`cordis.patch.yml` 的 4 个配置键（新增 `showStashes`） |
+| 我们的能力 | `lib/git.js` 的 11 个读方法 + `performAction` 的 34 个 action；`lib/index.js` 的 12 条路由；`cordis.patch.yml` 的 11 个配置键；197 个测试用例（host 85 / client 112） |
 
 ## 总览
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | 设置项 | 110 | 11 | 10% |
 | 命令 | 10 | 1 个入口（右侧栏 guide 卡片） | 场景等价 |
-| Git 操作 | 51 | 33（`ACTION_FIELDS`） | ~65% |
+| Git 操作 | 51 | 34（`ACTION_FIELDS`，UI 可达 33） | ~67% |
 | 图视图交互 | 右键菜单 / 查找 / 过滤 / 对比 / 悬浮 / 列设置 | 全部交互已迁移（列宽拖拽除外，见非目标） | ~95% |
 | 快捷键 | 6 组 | Escape / Enter + 标签页内 H·R·F·S·Shift+S/箭头 | 接近 |
 
@@ -47,11 +47,14 @@
 | 多仓库 | `POST /repos` + 仓库下拉 | 深度受限发现 + 统一路径围栏 `OUTSIDE_WORKSPACE` |
 | 代码评审 | `POST /review` + `storageDomain` | 逐文件勾选、进度、持久化、90 天过期 |
 
-已迁移的 Git 动作（**9 个**，UI 可触发）：
-检出分支、检出提交（分离 HEAD）、建分支、**删除分支**、拣选、还原、建标签、删标签、fetch。
+已迁移的 Git 动作（`ACTION_FIELDS` **34 个**，UI 可达 **33 个**）按家族列出：
+分支（建/检出/删除/重命名/合并/拉取/推送/rebase/reset/fetch 进本地分支）、提交（检出/拣选/还原/丢弃/合并/重设）、
+标签（建/删/推送/详情）、贮藏 stash（push/apply/pop/drop/branch）、未提交改动（clean/reset/stash/单文件丢弃）、
+远端（增/改/删/prune/多远端推送）、fetch。
 
-> `deleteBranch`：已完成接线（TODO-1）——host 侧本就有实现，客户端现已纳入动作行，
-> 并对未合并分支提供"强制删除"二次确认。
+> `mergeCommit` 是 `merge` 的别名，不单独暴露 UI（34 − 1 = 33）。
+> `deleteBranch` 的 UI 接线（TODO-1）已完成：首次删除总是非强制，git 拒绝未合并分支后再由 UI 升级为
+> "强制删除"二次确认。
 
 ---
 
@@ -59,9 +62,9 @@
 
 | # | 能力 | 上游行为 | 现状 | 影响 |
 | --- | --- | --- | --- | --- |
-| A1 | ~~**右键菜单**~~ | 在 commit / branch / tag 上右键弹出动作菜单 | **已迁移（提交级，TODO-3/4）**；分支/标签级见 TODO-5 | — |
+| A1 | ~~**右键菜单**~~ | 在 commit / branch / tag 上右键弹出动作菜单 | **已迁移（TODO-3/4/5）**：提交、分支、标签、远端、stash chip 各有上下文菜单 | — |
 | A2 | ~~**双提交对比视图**~~ | 点一个 commit，Ctrl/Cmd 再点另一个 → 对比文件与 diff | **已迁移（TODO-7）** | — |
-| A3 | ~~**未提交改动节点**~~ | 图顶部显示 uncommitted changes 虚拟节点 | **已迁移（TODO-6）**：虚线合成行 + 分组文件面板；"与某提交对比"部分见 TODO-16 | 尚不能直接对比工作区与选定提交 |
+| A3 | ~~**未提交改动节点**~~ | 图顶部显示 uncommitted changes 虚拟节点 | **已迁移（TODO-6）**：虚线合成行 + 分组文件面板；"与某个提交对比"见第五节残余 | 尚不能直接对比工作区与选定提交 |
 | A4 | ~~**查找控件**~~ | 在 message / 日期 / 作者 / 哈希 / 分支名 / 标签名中搜索提交 | **已迁移（TODO-9）**：已加载页内匹配 + N/M 跳转；服务端全量搜索未做 | 仅覆盖当前页 |
 | A5 | ~~**分支过滤下拉**~~ | 全部 / 多选分支 / 自定义 glob | **多选已迁移（TODO-10）**；自定义 glob 模式未做 | 无 glob |
 | A6 | ~~**列显隐**~~ | 可隐藏 Date / Author / Commit 列 | **已迁移**：溢出菜单三个复选框；**列宽拖拽为非目标**（右侧栏 380–520px，无可调表格） | — |

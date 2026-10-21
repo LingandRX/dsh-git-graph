@@ -55,6 +55,14 @@ The row's `config` is read defensively; edit it in `cordis.patch.yml`:
 | `repoPath` | `""` | pin every session to this repository path; empty = the session workspace |
 | `maxCommits` | `400` | default number of commits loaded in the graph |
 | `showRemoteBranches` | `true` | include `refs/remotes/*` chips and commits |
+| `showStashes` | `true` | expose `refs/stash` as stash chips (with the stash menu) |
+| `graphStyle` | `rounded` | lane geometry: `rounded` (bezier) or `angular` (right angles) |
+| `graphColours` | `[]` | custom lane palette (hex strings); empty = built-in palette |
+| `showSignature` | `false` | render the GPG/SSH signature badge for commits that have one |
+| `showEmoji` | `true` | expand `:shortcode:` in subjects/bodies (10 built-ins) |
+| `issueUrlTemplate` | `""` | `#123` → link; `{id}` is replaced by the number |
+| `useMailmap` | `false` | apply `.mailmap` (or `--use-mailmap`) to author names/emails |
+| `maxDepthOfRepoSearch` | `1` | how many directory levels are searched for repositories under the workspace |
 
 ## Files
 
@@ -67,17 +75,28 @@ The row's `config` is read defensively; edit it in `cordis.patch.yml`:
 | `locale/*.json` | Plugin Manager title/description (en, zh) |
 | `icon.svg` | Plugin artwork |
 | `docs/parity.md` | Migration report vs vscode-git-graph v1.30.0: what landed, what did not, and the evidence used |
-| `docs/todolist.md` | Actionable backlog (20 items) with file scope and acceptance criteria per item |
+| `docs/todolist.md` | Actionable backlog (21 items) with file scope and acceptance criteria per item |
 
 ## Migration status
 
-This plugin ports the core of vscode-git-graph, not all of it. The graph, commit
-details and per-file diffs are complete; the full right-click Git action surface,
-commit comparison, uncommitted-change node, find/filter and the engineering
-surroundings (multi-repo, code review, theming/settings) are not yet ported.
+The port is feature-complete at the **capability** level: graph, details/diffs, comparison,
+uncommitted node, context menus, find/filter/columns, the Git action surface, multi-repo,
+code-review marks and the presentation settings are all in. One sub-item is still open
+(`customEmojiShortcodeMappings`, i.e. user-defined emoji shortcodes); everything else is
+either migrated or explicitly declared a non-goal/residual.
 
-See [docs/parity.md](docs/parity.md) for the checked gap list and
-[docs/todolist.md](docs/todolist.md) for the ordered backlog.
+- [docs/parity.md](docs/parity.md) — evidence-backed gap report (§5 lists the declared
+  non-goals and residuals with reasons: column-width drag, `git archive`, avatars, PR
+  creation integrations, cross-workspace batch review, repo-config import/export, per-key
+  parity of the 110 upstream settings, server-side full-text search, custom branch globs,
+  working-tree-vs-commit comparison, global shortcuts).
+- [docs/todolist.md](docs/todolist.md) — the 21-item backlog: all 21 items are `[x]` at the
+  item level, and exactly one sub-bullet (`customEmojiShortcodeMappings`) is still unchecked.
+
+Verification: `node --test` → **197/197** (host 85, client 112), plus real-repository probes
+for every action family. Not verified in this workspace: pixel-level layout in the browser
+(no browser control in the session), and GPG-signed commits (no `gpg` available — only the
+unsigned `N` path was exercised).
 
 ## Notes
 

@@ -7,7 +7,7 @@
 
 - `P0` 补完主链路，`P1` 常用增强，`P2` 锦上添花。
 - 每条状态：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。
-- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **183** 个用例全绿）。
+- 验收统一先跑：`node --check lib/*.js`、`node --test`（当前基线 **197** 个用例全绿，只增不减）。
 - 所有新增可见文案必须同时补 `zh` 与 `en` 两个字典（`lib/client.js` 内 `LOCALE_NS = "dshGitGraph"`）。
 - 所有样式只用 `--dsw-alias-*` 主题变量；图形调色板除外。
 - 新增 Git 能力一律先进 `lib/git.js` 的 `performAction`，再由路由与工具复用；**禁止在 client 里拼 git 命令**。
@@ -160,12 +160,12 @@
 
 ### [x] TODO-12 分支动作补齐（P1）
 
-- [ ] `renameBranch`（`git branch -m`)
-- [ ] `merge`（`git merge [--no-ff] [--no-commit]`，冲突时返回 git 原文而非抛栈）
-- [ ] `resetToCommit`（`git reset --soft|--mixed|--hard`，`hard` 必须二次确认并显示脏工作区警告）
-- [ ] `pullBranch`（`git pull --ff-only` 优先，可选 `--no-ff`）
-- [ ] `pushBranch`（`git push`，无上游时提示）
-- [ ] `rebase`（非交互；明确标注"不做 interactive rebase"）
+- [x] `renameBranch`（`git branch -m`)
+- [x] `merge`（`git merge [--no-ff] [--no-commit]`，冲突时返回 git 原文而非抛栈）
+- [x] `resetToCommit`（`git reset --soft|--mixed|--hard`，`hard` 必须二次确认并显示脏工作区警告）
+- [x] `pullBranch`（`git pull --ff-only` 优先，可选 `--no-ff`）
+- [x] `pushBranch`（`git push`，无上游时提示）
+- [x] `rebase`（非交互；明确标注"不做 interactive rebase"）
 - **验收**：每个动作在临时仓库测试中成功路径 + 失败路径各 1 用例；`hard reset` / `rebase` 在脏工作区时先警告；工具端不暴露任何写操作。
 - **完成**（2026-10-21）：`renameBranch` / `merge` / `resetToCommit` / `pullBranch` / `pushBranch` / `rebase` 全部落地；
   push 的 `force` **只会**生成 `--force-with-lease`（argv 级断言，绝不出现裸 `--force`）；`hard` reset 与 rebase 有脏工作区警告。
@@ -173,8 +173,8 @@
 
 ### [x] TODO-13 提交动作补齐（P1）
 
-- [ ] `dropCommit`（仅限非 HEAD 且未被引用时允许，先 `git rebase --onto`；高风险，默认隐藏，需在确认框勾选"我了解这会重写历史"）
-- [ ] `mergeCommit`（等价 TODO-12 的 `merge` 指定提交）
+- [x] `dropCommit`（仅限非 HEAD 且未被引用时允许，先 `git rebase --onto`；高风险，默认隐藏，需在确认框勾选"我了解这会重写历史"）
+- [x] `mergeCommit`（等价 TODO-12 的 `merge` 指定提交）
 - **验收**：`dropCommit` 在会被拒绝的场景给出明确原因；补 host 用例 2。
 - **完成**（2026-10-21）：`dropCommit` 用 `git rebase --onto <hash>^ <hash>`，拒绝 HEAD、拒绝不在 HEAD 可达链上的提交、
   拒绝"本次 rebase 不会重写的其它 ref 所指向的子提交"（这是唯一既能拒绝"有子提交"又能丢中间提交的解读）；
@@ -182,16 +182,16 @@
 
 ### [x] TODO-14 标签详情与推送（P2）
 
-- [ ] annotated tag：`git for-each-ref --format=%(taggername)...` + `git tag -l --format=%(contents)` 展示 tagger 与 message
-- [ ] `pushTag`（`git push <remote> <tag>`）
+- [x] annotated tag：`git for-each-ref --format=%(taggername)...` + `git tag -l --format=%(contents)` 展示 tagger 与 message
+- [x] `pushTag`（`git push <remote> <tag>`）
 - **验收**：lightweight 与 annotated 区分显示；推送失败显示远端拒绝原文。
 - **完成**（2026-10-21）：`POST /tag` 返回 `{ name, annotated, tagger, message }`（lightweight → annotated:false、
   tagger:null、message 为提交标题）；`TagDetails` 面板显示类型/tagger/时间/message；`pushTag` 支持指定 remote。
 
 ### [x] TODO-15 贮藏 stash 全族（P1）
 
-- [ ] `stashPush` / `stashApply` / `stashPop` / `stashDrop` / `branchFromStash`
-- [ ] 图上以 stash 引用展示（`refs/stash`，`stash@{n}` 标签）
+- [x] `stashPush` / `stashApply` / `stashPop` / `stashDrop` / `branchFromStash`
+- [x] 图上以 stash 引用展示（`refs/stash`，`stash@{n}` 标签）
 - **验收**：stash 与分支/标签同处以独立 chip 显示；四条动作各有成功/失败用例；`pop` 冲突时保留 stash 并提示。
 - **完成**（2026-10-21）：`stashPush/Apply/Pop/Drop/branchFromStash` + `POST /stashes`；`showStashes` 开启时
   graph 值带 `stashes[]` 并把 stash 作为 `type:"stash"` 的 refs 追加（不改提交遍历）；chip 菜单含 apply/pop/drop/branch，
@@ -199,14 +199,14 @@
 
 ### [x] TODO-16 未提交改动动作（P2）
 
-- [ ] `cleanUntracked`（默认 dry-run 预览再执行）、`resetUncommitted`（soft/mixed/hard）、`stashUncommitted`、`resetFileToRevision`
+- [x] `cleanUntracked`（默认 dry-run 预览再执行）、`resetUncommitted`（soft/mixed/hard）、`stashUncommitted`、`resetFileToRevision`
 - **验收**：`clean` 必须先显示将被删除的文件清单；`hard` 类动作双重确认。
 - **完成**（2026-10-21）：`cleanUntracked`（dry-run 默认 true，UI 先跑 dry-run 展示清单、确认按钮在预览出现前禁用）、
   `resetUncommitted`（mixed/hard）、`stashUncommitted`、`resetFileToRevision`（单文件丢弃到 HEAD）全部落地。
 
 ### [x] TODO-17 远端管理（P2）
 
-- [ ] `addRemote` / `editRemote` / `deleteRemote` / `pruneRemote` / `pushToMultipleRemotes`
+- [x] `addRemote` / `editRemote` / `deleteRemote` / `pruneRemote` / `pushToMultipleRemotes`
 - **验收**：远端列表含 URL 与 fetch/push 地址；删除远端需确认；补 host 用例 2。
 - **完成**（2026-10-21）：`POST /remotes`（`git remote -v` 去重，fetch/push URL 分开）、`addRemote`/`editRemote`/
   `deleteRemote`/`pruneRemote`；`RemotesPanel` 列出并增删改/prune，空列表视为正常状态。
@@ -241,12 +241,12 @@
 
 ### [x] TODO-20 视觉与设置面（P2）
 
-- [ ] `graphStyle`：`rounded` / `angular`（`lanePath` 增加直角分支）
-- [ ] `graphColours`：自定义 lane 调色板（`cordis.patch.yml` 数组）
-- [ ] 签名状态：`git log --format=%G?` 在详情显示 verified/unverified
-- [ ] emoji shortcode：`:smile:` → 😄，支持 `customEmojiShortcodeMappings`
-- [ ] mailmap / issue 链接（issue URL 模板 → 提交正文中的编号变链接）
-- [ ] 快捷键：`Ctrl+H` 回 HEAD、`Ctrl+R` 刷新（需确认 DSH 侧栏快捷键注册方式）
+- [x] `graphStyle`：`rounded` / `angular`（`lanePath` 增加直角分支）
+- [x] `graphColours`：自定义 lane 调色板（`cordis.patch.yml` 数组）
+- [x] 签名状态：`git log --format=%G?` 在详情显示 verified/unverified
+- [ ] emoji shortcode：`:smile:` → 😄（内置 10 个**已实现**）；`customEmojiShortcodeMappings` 自定义映射**未做** ← 唯一开放子项
+- [x] mailmap / issue 链接（issue URL 模板 → 提交正文中的编号变链接）
+- [x] 快捷键：`Ctrl+H` 回 HEAD、`Ctrl+R` 刷新（需确认 DSH 侧栏快捷键注册方式）
 - **验收**：每项独立可开关；`angular` 与 `rounded` 快照测试各 1；设置项写进 `cordis.patch.yml` 并有默认值。
 - **完成**（2026-10-21）：`graphStyle`（rounded/angular，`lanePath` 参数化）、`graphColours`（循环自定义调色板）、
   签名徽标（G/B/U/X/Y/R → verified/bad/unknown/expired/revoked，N 不渲染）、emoji shortcode（10 个内置，
