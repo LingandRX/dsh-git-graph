@@ -3139,7 +3139,7 @@ test("CommitRow renders the five table cells and honours hidden columns", () => 
   // The chips live inline before the subject.
   const chips = collectElements(desc).find((element) => String(element.props.className || "").includes("dgg-chips-inline"));
   assert.ok(chips);
-  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*min-width:110px/);
+  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*min-width:80px/);
   assert.match(SOURCE, /\.dgg-cell-text\{[^}]*text-overflow:ellipsis/);
 });
 
@@ -5040,7 +5040,7 @@ test("column width helpers clamp, resize, reset and serialize", () => {
 
 test("narrow panes drop data columns one by one, from the right", () => {
   const { responsiveColumns, AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW } = loadInternals();
-  assert.deepEqual({ AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW }, { AUTHOR_HIDE_BELOW: 400, COMMIT_HIDE_BELOW: 440, DATE_HIDE_BELOW: 340 });
+  assert.deepEqual({ AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW }, { AUTHOR_HIDE_BELOW: 420, COMMIT_HIDE_BELOW: 500, DATE_HIDE_BELOW: 300 });
   const all = { author: true, date: true, hash: true };
   // Unknown width (first paint, tests, SSR) keeps every column.
   assert.deepEqual(plain(responsiveColumns(all, 0)), all);
@@ -5053,7 +5053,7 @@ test("narrow panes drop data columns one by one, from the right", () => {
   assert.deepEqual(plain(responsiveColumns(all, AUTHOR_HIDE_BELOW - 1)), { author: false, date: true, hash: false }, "then the author");
   assert.deepEqual(plain(responsiveColumns(all, DATE_HIDE_BELOW)), { author: false, date: true, hash: false });
   assert.deepEqual(plain(responsiveColumns(all, DATE_HIDE_BELOW - 1)), { author: false, date: false, hash: false }, "then the date, leaving graph + description");
-  assert.deepEqual(plain(responsiveColumns(all, 300)), { author: false, date: false, hash: false });
+  assert.deepEqual(plain(responsiveColumns(all, 250)), { author: false, date: false, hash: false });
   // Wide panes bring them back in the same order.
   assert.deepEqual(plain(responsiveColumns(all, 900)), all);
   assert.deepEqual(plain(responsiveColumns(all, 500)), all);
@@ -5070,16 +5070,15 @@ test("narrow panes drop data columns one by one, from the right", () => {
   assert.equal(SOURCE.split("metaVisibility: visibleColumns,").length - 1, 2, "search results and the commit list both use the responsive visibility");
 });
 
-test("narrow panes shrink the data columns before squeezing the description", () => {
-  // The three data columns are flexible with readable floors...
-  assert.match(SOURCE, /\.dgg-cell-date\{[^}]*flex:0 1 var\(--dgg-col-date, 140px\)[^}]*min-width:44px/);
-  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 1 var\(--dgg-col-author, 112px\)[^}]*min-width:56px/);
-  assert.match(SOURCE, /\.dgg-cell-commit\{[^}]*flex:0 1 var\(--dgg-col-commit, 76px\)[^}]*min-width:56px/);
-  // ...and the description has a zero basis plus a floor, so it grows into spare
-  // space, shrinks only after those columns, and never collapses below the floor
-  // (graph + description stay visible when the sidebar is narrow).
-  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*flex:1 1 0[^}]*min-width:110px/);
-  // The graph column stays fixed, so the description floor always has room.
+test("sidebar resizing never changes the configured data-column widths", () => {
+  // Fixed widths: a column is either at its configured width or hidden whole.
+  assert.match(SOURCE, /\.dgg-cell-date\{[^}]*flex:0 0 var\(--dgg-col-date, 140px\)/);
+  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 0 var\(--dgg-col-author, 112px\)/);
+  assert.match(SOURCE, /\.dgg-cell-commit\{[^}]*flex:0 0 var\(--dgg-col-commit, 76px\)/);
+  assert.doesNotMatch(SOURCE, /\.dgg-cell-(date|author|commit)\{[^}]*flex:0 1 /, "no flex-shrink on data columns");
+  // The description is the only flexible column, with a readable floor; the graph
+  // column stays fixed so the description floor always has room.
+  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*flex:1 1 auto[^}]*min-width:80px/);
   assert.match(SOURCE, /\.dgg-cell-graph\{[^}]*flex:0 0 var\(--dgg-graph-w/);
 });
 
