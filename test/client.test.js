@@ -4963,10 +4963,10 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 112, commit: 100 });
   assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 76 });
   const { graphWidthVar } = loadInternals();
-  assert.deepEqual(plain(graphWidthVar(1)), { "--dgg-graph-w": "16px" });
+  assert.deepEqual(plain(graphWidthVar(1)), { "--dgg-graph-w": "40px" });
   assert.deepEqual(plain(graphWidthVar(3)), { "--dgg-graph-w": "44px" });
   assert.deepEqual(plain(graphWidthVar(99)), { "--dgg-graph-w": "198px" }, "lanes are capped at MAX_LANES");
-  assert.deepEqual(plain(graphWidthVar(0)), { "--dgg-graph-w": "16px" });
+  assert.deepEqual(plain(graphWidthVar(0)), { "--dgg-graph-w": "40px" });
   assert.deepEqual(plain(columnWidthVars({ date: 100, author: 140, commit: 80 })), {
     "--dgg-col-date": "100px",
     "--dgg-col-author": "140px",
@@ -4999,6 +4999,10 @@ test("column width helpers clamp, resize, reset and serialize", () => {
 });
 
 test("column header renders draggable handles and the list applies CSS variables", () => {
+  // Exact class tokens (not a prefix regex): a header cell using `dgg-cell-description`
+  // while rows use `dgg-cell-desc` silently broke the flexible description column and
+  // pushed every fixed column header to the wrong x.
+  const cellToken = (className) => ["graph", "desc", "date", "author", "commit"].find((name) => String(className || "").split(" ").includes("dgg-cell-" + name));
   const { ColumnHeader, columnWidthVars, COLUMN_WIDTH_DEFAULTS, GitGraphBody } = loadInternals();
   const events = [];
   const header = collectElements(ColumnHeader({
@@ -5012,7 +5016,7 @@ test("column header renders draggable handles and the list applies CSS variables
   const handles = header.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle"));
   assert.equal(handles.length, 3, "handles only on Date/Author/Commit");
   const headerCells = header.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
-  assert.deepEqual(headerCells.map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date", "author", "commit"]);
+  assert.deepEqual(headerCells.map((element) => cellToken(element.props.className)), ["graph", "desc", "date", "author", "commit"]);
   const labelTexts = headerCells.map((element) => collectElements(element).filter((child) => String(child.props.className || "").includes("dgg-colhead-label")).map((child) => child.children.join("")).join(""));
   assert.deepEqual(labelTexts, ["column.graph", "column.description", "column.date", "column.author", "column.commit"]);
   const cellsWithHandles = headerCells.filter((element) => collectElements(element).some((child) => String(child.props.className || "").includes("dgg-colhead-handle"))).length;
@@ -5043,10 +5047,10 @@ test("column header renders draggable handles and the list applies CSS variables
   // Hidden columns remove both the header cell and its handle; Graph/Description stay.
   const hidden = collectElements(ColumnHeader({ t: (key) => key, columns: { date: true, author: false, hash: false } }));
   assert.equal(hidden.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 1);
-  assert.deepEqual(hidden.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date"]);
+  assert.deepEqual(hidden.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => cellToken(element.props.className)), ["graph", "desc", "date"]);
   const noColumns = collectElements(ColumnHeader({ t: (key) => key, columns: { date: false, author: false, hash: false } }));
   assert.equal(noColumns.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 0);
-  assert.deepEqual(noColumns.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc"]);
+  assert.deepEqual(noColumns.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => cellToken(element.props.className)), ["graph", "desc"]);
 
   // The list container carries the CSS variables that header and rows share.
   const graphValue = {
@@ -5064,18 +5068,22 @@ test("column header renders draggable handles and the list applies CSS variables
   const { GitGraphBody: Body } = loadInternals(undefined, react);
   const body = collectElements(Body({ sessionId: "session-1", t: (key) => key }));
   const listwrap = body.find((element) => String(element.props.className || "").includes("dgg-listwrap"));
-  assert.deepEqual(plain(listwrap.props.style), { ...columnWidthVars(COLUMN_WIDTH_DEFAULTS), "--dgg-graph-w": "16px" }, "the list container carries the column and graph widths");
+  assert.deepEqual(plain(listwrap.props.style), { ...columnWidthVars(COLUMN_WIDTH_DEFAULTS), "--dgg-graph-w": "40px" }, "the list container carries the column and graph widths");
   const commitList = body.find((element) => typeof element.type === "function" && element.type.name === "CommitList");
   assert.ok(commitList, "the body renders the commit list");
   const listElements = collectElements(commitList.type(commitList.props));
   const list = listElements.find((element) => String(element.props.className || "").includes("dgg-list"));
-  assert.equal(list.props.style["--dgg-graph-w"], "16px", "rows share the same graph cell width");
+  assert.equal(list.props.style["--dgg-graph-w"], "40px", "rows share the same graph cell width");
   const rowElements = collectElements(list).filter((element) => typeof element.type === "function" && element.type.name === "CommitRow");
   assert.equal(rowElements.length, 1, "the list renders its commit row");
   const rowCells = collectElements(rowElements[0].type(rowElements[0].props)).filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
-  assert.deepEqual(rowCells.map((element) => (String(element.props.className || "").match(/dgg-cell-(graph|desc|date|author|commit)/) || [])[1]), ["graph", "desc", "date", "author", "commit"]);
+  assert.deepEqual(rowCells.map((element) => cellToken(element.props.className)), ["graph", "desc", "date", "author", "commit"]);
   const headerInBody = body.find((element) => typeof element.type === "function" && element.type.name === "ColumnHeader");
   assert.ok(headerInBody, "the list renders the header");
+  // The header and the rows must use the exact same cell classes, in the same order —
+  // that is what makes the fixed columns line up without any manual offsets.
+  const headerCellsInBody = collectElements(headerInBody.type(headerInBody.props)).filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
+  assert.deepEqual(headerCellsInBody.map((element) => cellToken(element.props.className)), rowCells.map((element) => cellToken(element.props.className)), "header and row cells agree on every column class");
   assert.equal(typeof headerInBody.props.onResizeMove, "function");
   assert.match(SOURCE, /touch-action:none/);
   assert.match(SOURCE, /columnWidthVars\(columnWidths\)/);
