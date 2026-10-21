@@ -4980,7 +4980,7 @@ test("column width helpers clamp, resize, reset and serialize", () => {
     clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars,
     normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths,
   } = loadInternals();
-  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 140, author: 112, commit: 76 });
+  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 140, author: 100, commit: 76 });
   assert.deepEqual(plain(COLUMN_WIDTH_RANGES), { date: [48, 200], author: [64, 260], commit: [64, 220] });
   assert.equal(COLUMN_WIDTH_STORAGE_KEY, "dsh-git-graph:column-widths:v1");
 
@@ -4995,12 +4995,12 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.equal(clampColumnWidth("bogus", 100), 0);
   assert.equal(clampColumnWidth("date", Number.NaN), 140, "invalid px falls back to the default");
 
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 190, author: 112, commit: 76 });
-  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 140, author: 112, commit: 64 }, "clamped low");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 190, author: 100, commit: 76 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 140, author: 100, commit: 64 }, "clamped low");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 140, author: 260, commit: 76 }, "clamped high");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "bogus", 50)), plain(COLUMN_WIDTH_DEFAULTS));
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", Number.NaN)), plain(COLUMN_WIDTH_DEFAULTS));
-  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 112, commit: 100 });
+  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 100, commit: 100 });
   assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 76 });
   const { graphWidthVar } = loadInternals();
   assert.deepEqual(plain(graphWidthVar(1)), { "--dgg-graph-w": "40px" });
@@ -5073,7 +5073,7 @@ test("narrow panes drop data columns one by one, from the right", () => {
 test("sidebar resizing never changes the configured data-column widths", () => {
   // Fixed widths: a column is either at its configured width or hidden whole.
   assert.match(SOURCE, /\.dgg-cell-date\{[^}]*flex:0 0 var\(--dgg-col-date, 140px\)/);
-  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 0 var\(--dgg-col-author, 112px\)/);
+  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 0 var\(--dgg-col-author, 100px\)/);
   assert.match(SOURCE, /\.dgg-cell-commit\{[^}]*flex:0 0 var\(--dgg-col-commit, 76px\)/);
   assert.doesNotMatch(SOURCE, /\.dgg-cell-(date|author|commit)\{[^}]*flex:0 1 /, "no flex-shrink on data columns");
   // The description is the only flexible column, with a readable floor; the graph
