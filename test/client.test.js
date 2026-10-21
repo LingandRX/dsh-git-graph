@@ -1639,8 +1639,9 @@ test("the tab keeps the list visible and opens details inline", () => {
   assert.match(SOURCE, /className: "dgg-detail-row", role: "region"/);
   assert.match(SOURCE, /const backVisible = selected !== null && selected\.uncommitted === true;/, "only the uncommitted pane uses the page back button");
   assert.equal(SOURCE.split("detailSlot: inlineDetail,").length - 1, 2, "both the commit list and full-history results mount the inline detail");
-  assert.match(SOURCE, /\.dgg-detail-row\{display:flex;align-items:stretch/);
+  assert.match(SOURCE, /\.dgg-detail-row\{display:flex;align-items:stretch;padding:0 10px/, "the detail row matches a normal row's padding so the graph column lines up");
   assert.match(SOURCE, /\.dgg-bridge-line\{position:absolute;top:0;bottom:0/);
+  assert.match(SOURCE, /\.dgg-detail-inline \.dgg-detail\{padding:8px 10px 14px 0\}/, "detail content starts at the description column edge");
 });
 
 test("RefChips opens ref menus from buttons and from row spans", () => {
