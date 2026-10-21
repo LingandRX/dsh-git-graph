@@ -3130,7 +3130,8 @@ test("CommitRow renders the five table cells and honours hidden columns", () => 
   assert.deepEqual(cellsOf(render({ author: false, hash: false })), ["graph", "desc", "date"]);
   const all = render(undefined);
   assert.equal(richTextOf(all.find((element) => String(element.props.className || "").includes("dgg-cell-author"))), "Ann");
-  assert.equal(all.find((element) => String(element.props.className || "").includes("dgg-cell-commit")).children.join(""), "h1");
+  const commitCell = all.find((element) => String(element.props.className || "").includes("dgg-cell-commit"));
+  assert.equal(collectElements(commitCell).filter((element) => String(element.props.className || "").includes("dgg-cell-text")).map((element) => element.children.join("")).join(""), "h1", "the hash sits in an inner ellipsizing text box");
   const desc = all.find((element) => String(element.props.className || "").includes("dgg-cell-desc"));
   const subject = collectElements(desc).find((element) => String(element.props.className || "").includes("dgg-subject"));
   assert.match(subject.props.className, /dgg-cell-text/, "the subject ellipsizes inside the description cell");
@@ -5040,7 +5041,7 @@ test("column width helpers clamp, resize, reset and serialize", () => {
 
 test("data columns are dropped from the right until the description fits", () => {
   const { fittingColumns, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING } = loadInternals();
-  assert.deepEqual({ DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING }, { DESC_MIN_WIDTH: 150, DATE_COMPACT_WIDTH: 112, ROW_HORIZONTAL_PADDING: 20 });
+  assert.deepEqual({ DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING }, { DESC_MIN_WIDTH: 150, DATE_COMPACT_WIDTH: 124, ROW_HORIZONTAL_PADDING: 20 });
   const all = { author: true, date: true, hash: true };
   const widths = { date: 140, author: 100, commit: 76 };
   const graph = 40;
@@ -5053,9 +5054,9 @@ test("data columns are dropped from the right until the description fits", () =>
   // Date + author need 40 + 20 + 150 + 240 = 450px.
   assert.deepEqual(plain(fittingColumns(all, 450, widths, graph)), { author: true, date: true, hash: false });
   assert.deepEqual(plain(fittingColumns(all, 449, widths, graph)), { author: false, date: true, hash: false }, "then the author");
-  // The compact date fits down to 40 + 20 + 150 + 112 = 322px.
-  assert.deepEqual(plain(fittingColumns(all, 322, widths, graph)), { author: false, date: true, hash: false });
-  assert.deepEqual(plain(fittingColumns(all, 321, widths, graph)), { author: false, date: false, hash: false }, "below that only graph + description remain");
+  // The compact date fits down to 40 + 20 + 150 + 124 = 334px.
+  assert.deepEqual(plain(fittingColumns(all, 334, widths, graph)), { author: false, date: true, hash: false });
+  assert.deepEqual(plain(fittingColumns(all, 333, widths, graph)), { author: false, date: false, hash: false }, "below that only graph + description remain");
   assert.deepEqual(plain(fittingColumns(all, 900, widths, graph)), all);
   // The actual (dragged) widths and the graph width matter, not fixed thresholds.
   assert.deepEqual(plain(fittingColumns(all, 526, { date: 200, author: 100, commit: 76 }, graph)), { author: true, date: true, hash: false }, "a wide date column hides the commit earlier");
@@ -5081,7 +5082,7 @@ test("the date-only stage uses a compact date column", () => {
   // Wiring + compact styles: the list gets a stage class, the date column is
   // capped at 112px, chips are capped lower and the uncommitted counts fold away.
   assert.match(SOURCE, /className: "dgg-listwrap" \+ \(isDateOnlyLayout\(visibleColumns\) \? " dgg-date-only" : ""\)/);
-  assert.match(SOURCE, /\.dgg-date-only \.dgg-cell-date\{flex-basis:min\(var\(--dgg-col-date, 140px\), 112px\);font-size:10\.5px\}/);
+  assert.match(SOURCE, /\.dgg-date-only \.dgg-cell-date\{flex-basis:min\(var\(--dgg-col-date, 140px\), 124px\);font-size:10\.5px\}/);
   assert.match(SOURCE, /\.dgg-date-only \.dgg-chips-inline\{max-width:52%\}/);
   assert.match(SOURCE, /\.dgg-date-only \.dgg-uncommitted-counts\{display:none\}/);
 });
