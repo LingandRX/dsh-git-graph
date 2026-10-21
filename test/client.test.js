@@ -1535,6 +1535,90 @@ test("refMenuStillValid follows the ref list", () => {
   assert.equal(refMenuStillValid({ label: "main" }, [{ name: "refs/heads/main" }]), true);
 });
 
+test("commit details expand inline under the selected row", () => {
+  const { CommitList } = loadInternals();
+  const mk = (hash, subject) => ({ hash, abbrev: hash, subject, parents: [], authorName: "A", authorEmail: "a@e", authorTime: 0, committerName: "A", committerEmail: "a@e", committerTime: 0, refs: [] });
+  const value = { commits: [mk("a", "one"), mk("b", "two"), mk("c", "three")] };
+  const layout = { laneCount: 1, rows: [{ lane: 0, edges: [] }, { lane: 0, edges: [] }, { lane: 0, edges: [] }] };
+  const marker = { type: "div", props: { className: "detail-marker" }, children: ["details"] };
+  const render = (extra) => collectElements(CommitList({
+    t: (key) => key,
+    value,
+    layout,
+    refIndex: new Map(),
+    stashRefsByHash: new Map(),
+    presentation: {},
+    metaVisibility: { author: true, date: true, hash: true },
+    columnWidths: { date: 140, author: 60, commit: 76 },
+    indices: [0, 1, 2],
+    onSelect() {},
+    onMenu() {},
+    onRefMenu() {},
+    onHoverStart() {},
+    onHoverEnd() {},
+    ...extra,
+  }));
+  const flattened = (elements) => {
+    const list = elements.find((element) => String(element.props.className || "") === "dgg-list");
+    assert.ok(list, "the list renders");
+    const flat = [];
+    const push = (node) => {
+      if (Array.isArray(node)) { node.forEach(push); return; }
+      if (node !== null && typeof node === "object") flat.push(node);
+    };
+    (list.children || []).forEach(push);
+    return flat;
+  };
+  const open = flattened(render({ selectedHash: "b", detailSlot: marker, detailHash: "b" }));
+  const rowIndex = open.findIndex((element) => typeof element.type === "function" && element.type.name === "CommitRow" && element.props.commit.hash === "b");
+  const detailIndex = open.findIndex((element) => String(element.props.className || "").split(" ").includes("dgg-detail-inline"));
+  assert.ok(rowIndex >= 0, "the selected row renders");
+  assert.equal(detailIndex, rowIndex + 1, "the detail panel sits directly under its commit row, inside the list");
+  assert.ok(collectElements(open[detailIndex]).some((element) => element.props.className === "detail-marker"));
+  const closed = flattened(render({ selectedHash: "", detailSlot: marker, detailHash: "" }));
+  assert.ok(!closed.some((element) => String(element.props.className || "").includes("dgg-detail-inline")), "no detail slot without a selected commit");
+});
+
+test("DetailView renders a close control for inline details", () => {
+  const { DetailView } = loadInternals();
+  let closes = 0;
+  const props = {
+    t: (key) => key,
+    commit: { hash: "h", abbrev: "h", subject: "s", parents: [], refs: [], authorName: "A", authorEmail: "a@e", authorTime: 0, committerName: "A", committerEmail: "a@e", committerTime: 0, files: [], stats: { files: 0, insertions: 0, deletions: 0 }, body: "" },
+    refIndex: new Map(),
+    branches: [],
+    dirty: 0,
+    dialog: null,
+    run: null,
+    copy: { state: "idle", text: "" },
+    sessionId: "s1",
+    diffCache: { current: new Map() },
+    onOpenDialog() {},
+    onCancelDialog() {},
+    onConfirmDialog() {},
+    onRunFetch() {},
+    onSelectCommit() {},
+    onCopy() {},
+    onRefMenu() {},
+  };
+  const elements = collectElements(DetailView({ ...props, onClose: () => { closes += 1; } }));
+  const close = elements.find((element) => element.type === "button" && String(element.props.className || "").includes("dgg-detail-close"));
+  assert.ok(close, "inline details can be closed from the panel");
+  assert.equal(close.props["aria-label"], "detail.close");
+  close.props.onClick();
+  assert.equal(closes, 1);
+  const without = collectElements(DetailView({ ...props, onClose: undefined }));
+  assert.ok(!without.some((element) => String(element.props.className || "").includes("dgg-detail-close")), "no close button outside the inline slot");
+});
+
+test("the tab keeps the list visible and opens details inline", () => {
+  assert.match(SOURCE, /if \(wantsCompare !== true && selectedHash === hash\) \{/, "clicking the open commit again collapses it");
+  assert.match(SOURCE, /className: "dgg-detail-inline", role: "region"/);
+  assert.match(SOURCE, /const backVisible = selected !== null && selected\.uncommitted === true;/, "only the uncommitted pane uses the page back button");
+  assert.equal(SOURCE.split("detailSlot: inlineDetail,").length - 1, 2, "both the commit list and full-history results mount the inline detail");
+  assert.match(SOURCE, /\.dgg-detail-inline\{border-bottom:1px solid var\(--dsw-alias-border-l1\)/);
+});
+
 test("RefChips opens ref menus from buttons and from row spans", () => {
   const { classifyRefs, RefChips } = loadInternals();
   const index = refIndexFrom([
