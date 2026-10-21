@@ -1608,6 +1608,50 @@ test("the inline detail row bridges the graph lanes", () => {
   assert.match(SOURCE, /\.dgg-detail-graph\{position:relative;flex:0 0 var\(--dgg-graph-w, 40px\)/);
 });
 
+test("the uncommitted pane expands inline under its synthetic row", () => {
+  const { CommitList, UncommittedView } = loadInternals();
+  const value = { commits: [] };
+  const layout = { laneCount: 1, rows: [] };
+  const summary = { total: 2, counts: { staged: 0, unstaged: 1, untracked: 1 } };
+  const slot = { type: "div", props: { className: "uncommitted-marker" }, children: ["changes"] };
+  const render = (extra) => collectElements(CommitList({
+    t: (key) => key,
+    value,
+    layout,
+    refIndex: new Map(),
+    stashRefsByHash: new Map(),
+    presentation: {},
+    metaVisibility: { author: true, date: true, hash: true },
+    columnWidths: { date: 140, author: 60, commit: 76 },
+    uncommitted: summary,
+    indices: [],
+    onSelect() {},
+    onSelectUncommitted() {},
+    onMenu() {},
+    onRefMenu() {},
+    onHoverStart() {},
+    onHoverEnd() {},
+    uncommittedSlot: slot,
+    ...extra,
+  }));
+  const open = render({ uncommittedExpanded: true });
+  const rows = open.filter((element) => typeof element.type === "function" && element.type.name === "UncommittedRow");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].props.expanded, true, "the synthetic row reports its expanded state");
+  const detailRow = open.find((element) => String(element.props.className || "").split(" ").includes("dgg-detail-row"));
+  assert.ok(detailRow, "the pane sits in an inline detail row");
+  assert.ok(collectElements(detailRow).some((element) => element.props.className === "uncommitted-marker"), "the slot is placed under the row");
+  const closed = render({ uncommittedExpanded: false });
+  assert.ok(!closed.some((element) => String(element.props.className || "").includes("dgg-detail-row")), "no detail row while collapsed");
+  // The pane itself carries a close control.
+  let closes = 0;
+  const pane = collectElements(UncommittedView({ t: (key) => key, value: { staged: [], unstaged: [], untracked: [] }, onClose: () => { closes += 1; } }));
+  const close = pane.find((element) => element.type === "button" && String(element.props.className || "").includes("dgg-detail-close"));
+  assert.ok(close, "the uncommitted pane can be closed");
+  close.props.onClick();
+  assert.equal(closes, 1);
+});
+
 test("DetailView renders a close control for inline details", () => {
   const { DetailView } = loadInternals();
   let closes = 0;
@@ -1643,7 +1687,9 @@ test("DetailView renders a close control for inline details", () => {
 test("the tab keeps the list visible and opens details inline", () => {
   assert.match(SOURCE, /if \(wantsCompare !== true && selectedHash === hash\) \{/, "clicking the open commit again collapses it");
   assert.match(SOURCE, /className: "dgg-detail-row", role: "region"/);
-  assert.match(SOURCE, /const backVisible = selected !== null && selected\.uncommitted === true;/, "only the uncommitted pane uses the page back button");
+  assert.match(SOURCE, /const backVisible = false;/, "every detail view is inline now: no page back button");
+  assert.match(SOURCE, /uncommittedSlot,\n\s*uncommittedExpanded,/, "the uncommitted pane gets the same inline slot");
+  assert.equal(SOURCE.split('className: "dgg-detail-row", role: "region"').length - 1, 2, "commit and uncommitted details both use a detail row");
   assert.equal(SOURCE.split("detailSlot: inlineDetail,").length - 1, 2, "both the commit list and full-history results mount the inline detail");
   assert.match(SOURCE, /\.dgg-detail-row\{display:flex;align-items:stretch;padding:0 10px/, "the detail row matches a normal row's padding so the graph column lines up");
   assert.match(SOURCE, /\.dgg-bridge-line\{position:absolute;top:0;bottom:0/);
