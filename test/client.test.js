@@ -404,7 +404,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, responsiveColumns, isDateOnlyLayout, AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, fittingColumns, isDateOnlyLayout, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING, " +
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
@@ -5038,70 +5038,53 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.deepEqual(JSON.parse(storage.data.get(COLUMN_WIDTH_STORAGE_KEY)), { date: 120, author: 150, commit: 90 });
 });
 
-test("narrow panes drop data columns one by one, from the right", () => {
-  const { responsiveColumns, AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW } = loadInternals();
-  assert.deepEqual({ AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW }, { AUTHOR_HIDE_BELOW: 420, COMMIT_HIDE_BELOW: 500, DATE_HIDE_BELOW: 300 });
+test("data columns are dropped from the right until the description fits", () => {
+  const { fittingColumns, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING } = loadInternals();
+  assert.deepEqual({ DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING }, { DESC_MIN_WIDTH: 150, DATE_COMPACT_WIDTH: 112, ROW_HORIZONTAL_PADDING: 20 });
   const all = { author: true, date: true, hash: true };
-  // Unknown width (first paint, tests, SSR) keeps every column.
-  assert.deepEqual(plain(responsiveColumns(all, 0)), all);
-  assert.deepEqual(plain(responsiveColumns(all, undefined)), all);
-  assert.deepEqual(plain(responsiveColumns(all, Number.NaN)), all);
-  // The commit column goes first (rightmost), then the author, then the date.
-  assert.deepEqual(plain(responsiveColumns(all, COMMIT_HIDE_BELOW)), all, "the commit threshold itself still shows it");
-  assert.deepEqual(plain(responsiveColumns(all, COMMIT_HIDE_BELOW - 1)), { author: true, date: true, hash: false }, "commit disappears first");
-  assert.deepEqual(plain(responsiveColumns(all, AUTHOR_HIDE_BELOW)), { author: true, date: true, hash: false });
-  assert.deepEqual(plain(responsiveColumns(all, AUTHOR_HIDE_BELOW - 1)), { author: false, date: true, hash: false }, "then the author");
-  assert.deepEqual(plain(responsiveColumns(all, DATE_HIDE_BELOW)), { author: false, date: true, hash: false });
-  assert.deepEqual(plain(responsiveColumns(all, DATE_HIDE_BELOW - 1)), { author: false, date: false, hash: false }, "then the date, leaving graph + description");
-  assert.deepEqual(plain(responsiveColumns(all, 250)), { author: false, date: false, hash: false });
-  // Wide panes bring them back in the same order.
-  assert.deepEqual(plain(responsiveColumns(all, 900)), all);
-  assert.deepEqual(plain(responsiveColumns(all, 500)), all);
-  // The user's own toggles win in both directions.
-  assert.deepEqual(plain(responsiveColumns({ author: false, date: true, hash: true }, 900)), { author: false, date: true, hash: true });
-  assert.deepEqual(plain(responsiveColumns({ author: true, date: false, hash: false }, 900)), { author: true, date: false, hash: false });
+  const widths = { date: 140, author: 100, commit: 76 };
+  const graph = 40;
+  // Unknown width keeps every column (first paint, tests, SSR).
+  assert.deepEqual(plain(fittingColumns(all, 0, widths, graph)), all);
+  assert.deepEqual(plain(fittingColumns(all, undefined, widths, graph)), all);
+  // All five columns need 40 + 20 + 150 + 316 = 526px.
+  assert.deepEqual(plain(fittingColumns(all, 526, widths, graph)), all);
+  assert.deepEqual(plain(fittingColumns(all, 525, widths, graph)), { author: true, date: true, hash: false }, "commit goes first");
+  // Date + author need 40 + 20 + 150 + 240 = 450px.
+  assert.deepEqual(plain(fittingColumns(all, 450, widths, graph)), { author: true, date: true, hash: false });
+  assert.deepEqual(plain(fittingColumns(all, 449, widths, graph)), { author: false, date: true, hash: false }, "then the author");
+  // The compact date fits down to 40 + 20 + 150 + 112 = 322px.
+  assert.deepEqual(plain(fittingColumns(all, 322, widths, graph)), { author: false, date: true, hash: false });
+  assert.deepEqual(plain(fittingColumns(all, 321, widths, graph)), { author: false, date: false, hash: false }, "below that only graph + description remain");
+  assert.deepEqual(plain(fittingColumns(all, 900, widths, graph)), all);
+  // The actual (dragged) widths and the graph width matter, not fixed thresholds.
+  assert.deepEqual(plain(fittingColumns(all, 526, { date: 200, author: 100, commit: 76 }, graph)), { author: true, date: true, hash: false }, "a wide date column hides the commit earlier");
+  assert.deepEqual(plain(fittingColumns(all, 526, widths, 60)), { author: true, date: true, hash: false }, "more lanes hide the commit earlier");
+  // The user's own toggles still win.
+  assert.deepEqual(plain(fittingColumns({ author: false, date: true, hash: true }, 900, widths, graph)), { author: false, date: true, hash: true });
+  assert.deepEqual(plain(fittingColumns({ author: true, date: true, hash: false }, 450, widths, graph)), { author: true, date: true, hash: false });
+  assert.deepEqual(plain(fittingColumns(null, 900, widths, graph)), all, "missing columns fall back to the defaults");
   const input = { author: true, date: true, hash: true };
-  assert.notEqual(responsiveColumns(input, 900), input, "a new object is returned");
-  assert.deepEqual(plain(responsiveColumns(null, 900)), all, "missing columns fall back to the defaults");
-  // ResizeObserver wiring: the measured width feeds the header and both lists.
-  assert.match(SOURCE, /const Observer = typeof ResizeObserver === "function" \? ResizeObserver : null;/);
-  assert.match(SOURCE, /const visibleColumns = responsiveColumns\(columns, paneWidth\);/);
+  assert.notEqual(fittingColumns(input, 900, widths, graph), input, "a new object is returned");
+  // Wiring: the measured width + real column widths + graph width feed the header and both lists.
+  assert.match(SOURCE, /const visibleColumns = fittingColumns\(columns, paneWidth, columnWidths, graphCellWidth\);/);
   assert.match(SOURCE, /columns: visibleColumns,\n\s*onResizeStart: startColumnResize,/);
   assert.equal(SOURCE.split("metaVisibility: visibleColumns,").length - 1, 2, "search results and the commit list both use the responsive visibility");
 });
 
-test("sidebar resizing never changes the configured data-column widths", () => {
-  // Fixed widths: a column is either at its configured width or hidden whole.
-  assert.match(SOURCE, /\.dgg-cell-date\{[^}]*flex:0 0 var\(--dgg-col-date, 140px\)/);
-  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 0 var\(--dgg-col-author, 100px\)/);
-  assert.match(SOURCE, /\.dgg-cell-commit\{[^}]*flex:0 0 var\(--dgg-col-commit, 76px\)/);
-  assert.doesNotMatch(SOURCE, /\.dgg-cell-(date|author|commit)\{[^}]*flex:0 1 /, "no flex-shrink on data columns");
-  // The description is the only flexible column, with a readable floor; the graph
-  // column stays fixed so the description floor always has room.
-  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*flex:1 1 auto[^}]*min-width:80px/);
-  assert.match(SOURCE, /\.dgg-cell-graph\{[^}]*flex:0 0 var\(--dgg-graph-w/);
-});
-
 test("the date-only stage uses a compact date column", () => {
-  const { isDateOnlyLayout, responsiveColumns } = loadInternals();
-  const all = { author: true, date: true, hash: true };
-  assert.equal(isDateOnlyLayout(responsiveColumns(all, 350), 350), true);
-  assert.equal(isDateOnlyLayout(responsiveColumns(all, 300), 300), true, "the compact stage starts when author+commit are gone");
-  assert.equal(isDateOnlyLayout(responsiveColumns(all, 299), 299), false, "below 300 the date is gone too");
-  assert.equal(isDateOnlyLayout(responsiveColumns(all, 420), 420), false, "at 420 the author column is back");
-  assert.equal(isDateOnlyLayout(responsiveColumns(all, 900), 900), false);
-  assert.equal(isDateOnlyLayout({ author: false, date: true, hash: false }, 0), false, "unknown width keeps the regular layout");
-  assert.equal(isDateOnlyLayout({ author: true, date: true, hash: false }, 350), false);
-  assert.equal(isDateOnlyLayout({ author: false, date: false, hash: false }, 350), false);
-  assert.equal(isDateOnlyLayout(null, 350), false);
+  const { isDateOnlyLayout } = loadInternals();
+  assert.equal(isDateOnlyLayout({ author: false, date: true, hash: false }), true);
+  assert.equal(isDateOnlyLayout({ author: true, date: true, hash: false }), false);
+  assert.equal(isDateOnlyLayout({ author: false, date: false, hash: false }), false);
+  assert.equal(isDateOnlyLayout(null), false, "defaults keep every column visible");
   // Wiring + compact styles: the list gets a stage class, the date column is
   // capped at 112px, chips are capped lower and the uncommitted counts fold away.
-  assert.match(SOURCE, /className: "dgg-listwrap" \+ \(isDateOnlyLayout\(visibleColumns, paneWidth\) \? " dgg-date-only" : ""\)/);
+  assert.match(SOURCE, /className: "dgg-listwrap" \+ \(isDateOnlyLayout\(visibleColumns\) \? " dgg-date-only" : ""\)/);
   assert.match(SOURCE, /\.dgg-date-only \.dgg-cell-date\{flex-basis:min\(var\(--dgg-col-date, 140px\), 112px\);font-size:10\.5px\}/);
   assert.match(SOURCE, /\.dgg-date-only \.dgg-chips-inline\{max-width:52%\}/);
   assert.match(SOURCE, /\.dgg-date-only \.dgg-uncommitted-counts\{display:none\}/);
 });
-
 test("column header renders draggable handles and the list applies CSS variables", () => {
   // Exact class tokens (not a prefix regex): a header cell using `dgg-cell-description`
   // while rows use `dgg-cell-desc` silently broke the flexible description column and
