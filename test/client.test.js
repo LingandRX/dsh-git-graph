@@ -404,7 +404,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, responsiveColumns, AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, responsiveColumns, isDateOnlyLayout, AUTHOR_HIDE_BELOW, COMMIT_HIDE_BELOW, DATE_HIDE_BELOW, " +
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
@@ -5080,6 +5080,26 @@ test("sidebar resizing never changes the configured data-column widths", () => {
   // column stays fixed so the description floor always has room.
   assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*flex:1 1 auto[^}]*min-width:80px/);
   assert.match(SOURCE, /\.dgg-cell-graph\{[^}]*flex:0 0 var\(--dgg-graph-w/);
+});
+
+test("the date-only stage uses a compact date column", () => {
+  const { isDateOnlyLayout, responsiveColumns } = loadInternals();
+  const all = { author: true, date: true, hash: true };
+  assert.equal(isDateOnlyLayout(responsiveColumns(all, 350), 350), true);
+  assert.equal(isDateOnlyLayout(responsiveColumns(all, 300), 300), true, "the compact stage starts when author+commit are gone");
+  assert.equal(isDateOnlyLayout(responsiveColumns(all, 299), 299), false, "below 300 the date is gone too");
+  assert.equal(isDateOnlyLayout(responsiveColumns(all, 420), 420), false, "at 420 the author column is back");
+  assert.equal(isDateOnlyLayout(responsiveColumns(all, 900), 900), false);
+  assert.equal(isDateOnlyLayout({ author: false, date: true, hash: false }, 0), false, "unknown width keeps the regular layout");
+  assert.equal(isDateOnlyLayout({ author: true, date: true, hash: false }, 350), false);
+  assert.equal(isDateOnlyLayout({ author: false, date: false, hash: false }, 350), false);
+  assert.equal(isDateOnlyLayout(null, 350), false);
+  // Wiring + compact styles: the list gets a stage class, the date column is
+  // capped at 112px, chips are capped lower and the uncommitted counts fold away.
+  assert.match(SOURCE, /className: "dgg-listwrap" \+ \(isDateOnlyLayout\(visibleColumns, paneWidth\) \? " dgg-date-only" : ""\)/);
+  assert.match(SOURCE, /\.dgg-date-only \.dgg-cell-date\{flex-basis:min\(var\(--dgg-col-date, 140px\), 112px\);font-size:10\.5px\}/);
+  assert.match(SOURCE, /\.dgg-date-only \.dgg-chips-inline\{max-width:52%\}/);
+  assert.match(SOURCE, /\.dgg-date-only \.dgg-uncommitted-counts\{display:none\}/);
 });
 
 test("column header renders draggable handles and the list applies CSS variables", () => {
