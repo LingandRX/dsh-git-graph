@@ -230,13 +230,21 @@ const CONTRACT_KEYS = [
  * A minimal React stand-in: only `createElement` ever runs at load time, and no
  * hook is executed because the smoke test never renders a component tree.
  */
-function createFakeReact() {
+function createFakeReact(options = {}) {
+  // `states` lets one render start from a non-initial state (e.g. a loaded graph)
+  // so value-dependent branches can be executed instead of stopping at first paint.
+  const states = Array.isArray(options.states) ? options.states.slice() : [];
+  let stateCall = 0;
   return {
     createElement(type, props, ...children) {
       return { type, props: props ?? {}, children };
     },
     Fragment: Symbol.for("react.fragment"),
-    useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
+    useState: (initial) => {
+      const next = stateCall < states.length ? states[stateCall] : typeof initial === "function" ? initial() : initial;
+      stateCall += 1;
+      return [next, () => {}];
+    },
     useEffect: () => {},
     useMemo: (factory) => factory(),
     useRef: (initial) => ({ current: initial }),
@@ -281,9 +289,9 @@ function loadDefinition(source, fetchImpl) {
  * @param source - client source to evaluate.
  * @returns the load id, the factory exports and every requested module id.
  */
-function loadModule(source = SOURCE, fetchImpl) {
+function loadModule(source = SOURCE, fetchImpl, reactImpl) {
   const definition = loadDefinition(source, fetchImpl);
-  const fakeReact = createFakeReact();
+  const fakeReact = reactImpl ?? createFakeReact();
   const requested = [];
   const requireStub = (id) => {
     requested.push(id);
@@ -313,7 +321,7 @@ function instrument(exports) {
  * @param fetchImpl - optional fetch stub used by request-path tests.
  * @returns the internal helpers and views the tests exercise directly.
  */
-function loadInternals(fetchImpl) {
+function loadInternals(fetchImpl, reactImpl) {
   const { exported } = loadModule(
     instrument(
       "__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal, " +
@@ -339,9 +347,10 @@ function loadInternals(fetchImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf }",
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody }",
     ),
     fetchImpl,
+    reactImpl,
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
   return exported.__test;
@@ -569,6 +578,56 @@ test("registers the pane body under the definition id in the right sidebar tab s
   assert.equal(injected.sessionId, "session-1");
   assert.equal(typeof component, "function");
   assert.equal(component.name, "GitGraphBody");
+});
+
+test("GitGraphBody renders on first paint without a TDZ error", () => {
+  // Every `React.useMemo`/`useEffect` dependency array is evaluated at call time,
+  // so a `const` declared *after* its first use throws a ReferenceError here. The
+  // harness never rendered this body before, which is how a `headHash` TDZ crash
+  // reached the browser.
+  const { GitGraphBody } = loadInternals();
+  let tree;
+  assert.doesNotThrow(() => {
+    tree = GitGraphBody({ sessionId: "session-1", t: (key) => key });
+  });
+  assert.ok(tree !== null && typeof tree === "object", "the tab body returns an element tree");
+  assert.ok(Array.isArray(tree.children) && tree.children.length > 0, "the first paint renders children");
+});
+
+test("GitGraphBody renders a loaded graph without a TDZ error", () => {
+  const graphValue = {
+    isRepo: true,
+    repoPath: "/tmp/repo",
+    workspacePath: "/tmp/repo",
+    head: { branch: "main", hash: "h1", detached: false },
+    refs: [
+      { name: "refs/heads/main", shortName: "main", hash: "h1", head: true },
+      { name: "refs/remotes/origin/main", shortName: "origin/main", hash: "h1", head: false },
+    ],
+    commits: [
+      { hash: "h1", parents: ["h0"], abbrev: "h1", authorName: "A", authorEmail: "a@e", authorTime: 1, committerName: "A", committerEmail: "a@e", committerTime: 1, subject: "one", refs: ["HEAD -> main"] },
+      { hash: "h0", parents: [], abbrev: "h0", authorName: "A", authorEmail: "a@e", authorTime: 0, committerName: "A", committerEmail: "a@e", committerTime: 0, subject: "zero", refs: [] },
+    ],
+    presentation: {
+      muteNonAncestors: true,
+      muteMergeCommits: true,
+      initialLoad: 300,
+      loadMore: 100,
+      loadMoreAutomatically: true,
+      columnVisibility: { Date: true, Author: true, Commit: true },
+      fileViewType: "File Tree",
+      shortcuts: {},
+    },
+  };
+  // First `useState` call is the graph state; start it in the ready state so every
+  // value-dependent memo/effect body is evaluated once.
+  const react = createFakeReact({ states: [{ status: "ready", value: graphValue, error: null }] });
+  const { GitGraphBody } = loadInternals(undefined, react);
+  let tree;
+  assert.doesNotThrow(() => {
+    tree = GitGraphBody({ sessionId: "session-1", t: (key) => key });
+  });
+  assert.ok(tree !== null && typeof tree === "object" && Array.isArray(tree.children));
 });
 
 test("apply is repeatable and registers inside labelled effects", () => {
