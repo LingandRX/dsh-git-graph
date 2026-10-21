@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { SEARCH_SCAN_LIMIT, createGitApi, createGitRunner, isValidRefName } from "../lib/git.js";
+import { SEARCH_SCAN_LIMIT, avatarUrl, createGitApi, createGitRunner, isValidRefName, md5Hex } from "../lib/git.js";
 import { apply, name as pluginName, normalizeConfig } from "../lib/index.js";
 
 const FIELD = "\u001f";
@@ -33,6 +33,9 @@ const REMOTES_PATH = "/api/dsh-git-graph/remotes";
 const CONTAINS_PATH = "/api/dsh-git-graph/contains";
 const REPOS_PATH = "/api/dsh-git-graph/repos";
 const REVIEW_PATH = "/api/dsh-git-graph/review";
+const ARCHIVE_PATH = "/api/dsh-git-graph/archive";
+const PR_PATH = "/api/dsh-git-graph/pr";
+const REPOCONFIG_PATH = "/api/dsh-git-graph/repoconfig";
 
 /** Filesystem and git fixtures shared by the suite. */
 const fixture = {
@@ -125,7 +128,7 @@ function importLinearHistory(cwd, count) {
       "",
     );
   }
-  execFileSync("git", ["fast-import", "--quiet"], {
+  execFileSync("git", ["fast-import", "--quiet", "--force"], {
     cwd,
     env: fixture.env,
     input: `${records.join("\n")}\n`,
@@ -761,8 +764,8 @@ test("apply is defensive: no services, no config, repeated application", () => {
   assert.doesNotThrow(() => apply(createFakeContext({}).ctx, { repoPath: 7, maxCommits: "x", showRemoteBranches: "yes" }));
   const first = createHost({ config: undefined });
   const second = createHost({ config: undefined });
-  assert.equal(first.routes.size, 13);
-  assert.equal(second.routes.size, 13);
+  assert.equal(first.routes.size, 16);
+  assert.equal(second.routes.size, 16);
   first.dispose();
   assert.equal(first.routes.size, 0, "route disposers unregister the routes");
 });
@@ -781,11 +784,11 @@ test("normalizeConfig reads raw values defensively", () => {
   assert.equal(normalizeConfig({ maxCommits: "10" }).maxCommits, 400);
 });
 
-test("apply registers exactly the thirteen POST Fetch routes", () => {
+test("apply registers exactly the sixteen POST Fetch routes", () => {
   const routes = [...host.routes.keys()].sort();
   assert.deepEqual(
     routes,
-    [ACTION_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, REMOTES_PATH, REPOS_PATH, REVIEW_PATH, SEARCH_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
+    [ACTION_PATH, ARCHIVE_PATH, COMMIT_PATH, COMPARE_PATH, CONTAINS_PATH, DIFF_PATH, GRAPH_PATH, PR_PATH, REMOTES_PATH, REPOCONFIG_PATH, REPOS_PATH, REVIEW_PATH, SEARCH_PATH, STASHES_PATH, TAG_PATH, UNCOMMITTED_PATH].sort(),
   );
   for (const route of host.routes.values()) {
     assert.deepEqual(route.methods, ["POST"]);
@@ -801,7 +804,7 @@ test("exposes no service when connection/tools are missing", () => {
   assert.equal(noConnection.routes.size, 0);
   assert.equal(noConnection.tools.length, 1);
   const noTools = createHost({ includeTools: false });
-  assert.equal(noTools.routes.size, 13);
+  assert.equal(noTools.routes.size, 16);
   assert.equal(noTools.tools.length, 0);
 });
 
@@ -2512,7 +2515,7 @@ test("readCommit reports signature status without an extra git process", async (
   }
 });
 
-test("graph presentation forwards all 29 settings keys", async () => {
+test("graph presentation forwards all 30 settings keys", async () => {
   const dir = createScratchRepo("presentation");
   writeFile(path.join(dir, "a.txt"), "a\n");
   commitAll(dir, "A");
@@ -2573,8 +2576,10 @@ test("graph presentation forwards all 29 settings keys", async () => {
     initialLoad: 300,
     loadMore: 100,
     loadMoreAutomatically: true,
+    avatars: false,
   };
   const expectedKeys = Object.keys(defaults);
+  assert.equal(expectedKeys.length, 30);
 
   const defaultHost = createHost({ config: undefined, defaultDirectory: dir });
   try {
@@ -2654,6 +2659,7 @@ test("graph presentation forwards all 29 settings keys", async () => {
       "commitDetailsView.fileView.type": "Nonsense",
       globalShortcuts: {},
       repositoryDropdownOrder: "Nonsense",
+      "repository.commits.fetchAvatars": 7,
     },
     defaultDirectory: dir,
   });
@@ -3965,4 +3971,720 @@ test("readGraph maps the repository settings onto the git log argv", async () =>
   assert.equal(logCall().includes("--tags"), false);
   await fakeApi.readGraph("/fake/repo", { maxCommits: 2, showRemoteBranches: false });
   assert.equal(logCall().includes("--remotes"), false);
+});
+
+
+// ---------------------------------------------------------------------------
+// Wave 9: archive export, avatars and pull-request creation
+// ---------------------------------------------------------------------------
+
+test("archive exports zip and tar.gz archives into the workspace", async () => {
+  const dir = createScratchRepo("archive-export");
+  writeFile(path.join(dir, "src", "main.txt"), "hello\n");
+  writeFile(path.join(dir, "README.md"), "# archive\n");
+  const head = commitAll(dir, "archive base");
+
+  const archiveHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const zip = await post(archiveHost, ARCHIVE_PATH, { ref: "HEAD" });
+    assert.equal(zip.ok, true);
+    assert.equal(zip.value.isRepo, true);
+    assert.equal(zip.value.format, "zip");
+    assert.equal(zip.value.ref, "HEAD");
+    assert.equal(zip.value.path.startsWith(".dsh-git-graph/archives/"), true);
+    assert.match(zip.value.name, /^archive-export-head-\d{8}-\d{6}\.zip$/);
+    const zipPath = path.join(dir, zip.value.path);
+    assert.equal(fs.existsSync(zipPath), true);
+    assert.deepEqual([...fs.readFileSync(zipPath).subarray(0, 2)], [0x50, 0x4b], "zip magic is PK");
+    assert.equal(zip.value.bytes, fs.statSync(zipPath).size);
+    assert.ok(zip.value.bytes > 0);
+
+    const tarball = await post(archiveHost, ARCHIVE_PATH, { ref: head, format: "tar.gz" });
+    assert.equal(tarball.ok, true);
+    assert.equal(tarball.value.ref, head);
+    assert.equal(tarball.value.format, "tar.gz");
+    assert.match(tarball.value.name, /\.tar\.gz$/);
+    const tarPath = path.join(dir, tarball.value.path);
+    assert.equal(fs.existsSync(tarPath), true);
+    assert.deepEqual([...fs.readFileSync(tarPath).subarray(0, 2)], [0x1f, 0x8b], "gzip magic");
+
+    /* The git API itself defaults the target workspace to `cwd`. */
+    const direct = await api.archive(dir, { ref: "HEAD", format: "zip" });
+    assert.equal(direct.isRepo, true);
+    assert.equal(direct.format, "zip");
+    assert.equal(fs.existsSync(path.join(dir, direct.path)), true);
+    assert.equal(direct.path.startsWith(".dsh-git-graph/archives/"), true);
+
+    const second = await post(archiveHost, ARCHIVE_PATH, { ref: "HEAD" });
+    assert.equal(second.ok, true);
+    assert.notEqual(second.value.name, zip.value.name, "the same ref/format gets a unique name");
+    assert.notEqual(second.value.path, direct.path);
+    assert.equal(fs.existsSync(path.join(dir, second.value.path)), true);
+  } finally {
+    archiveHost.dispose();
+  }
+});
+
+test("archive validates its request, handles non-repo and stays inside the workspace fence", async () => {
+  const dir = createScratchRepo("archive-errors");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+
+  const archiveHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const badRequests = [
+      [{}, "BAD_REQUEST"],
+      [{ ref: "" }, "BAD_REQUEST"],
+      [{ ref: "-rf" }, "BAD_REQUEST"],
+      [{ ref: "HEAD", format: "rar" }, "BAD_REQUEST"],
+      [{ ref: "HEAD", format: 42 }, "BAD_REQUEST"],
+      [{ ref: "does-not-exist" }, "GIT_FAILED"],
+    ];
+    for (const [body, code] of badRequests) {
+      const envelope = await post(archiveHost, ARCHIVE_PATH, body);
+      assert.equal(envelope.ok, false, JSON.stringify(body));
+      assert.equal(envelope.error.code, code, JSON.stringify(body));
+      if (code === "GIT_FAILED") assert.equal(typeof envelope.error.message, "string");
+    }
+
+    const outsidePath = await post(archiveHost, ARCHIVE_PATH, { ref: "HEAD", path: fixture.empty });
+    assert.equal(outsidePath.ok, false);
+    assert.equal(outsidePath.error.code, "OUTSIDE_WORKSPACE");
+  } finally {
+    archiveHost.dispose();
+  }
+
+  const nonRepoHost = createHost({ config: undefined, defaultDirectory: fixture.empty });
+  try {
+    const envelope = await post(nonRepoHost, ARCHIVE_PATH, { ref: "HEAD" });
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.value.isRepo, false);
+  } finally {
+    nonRepoHost.dispose();
+  }
+
+  /* A repository selected through `path` still exports into the session workspace root. */
+  const workspaceRoot = path.join(fixture.root, "archive-workspace");
+  fs.mkdirSync(workspaceRoot);
+  const nestedRepo = path.join(workspaceRoot, "nested");
+  fs.mkdirSync(nestedRepo);
+  runGit(["init", "-q", "-b", "main"], nestedRepo);
+  writeFile(path.join(nestedRepo, "a.txt"), "a\n");
+  runGit(["add", "-A"], nestedRepo);
+  runGit(["commit", "-q", "-m", "base"], nestedRepo, nextDates());
+  const workspaceHost = createHost({ config: undefined, defaultDirectory: workspaceRoot });
+  try {
+    const envelope = await post(workspaceHost, ARCHIVE_PATH, { ref: "HEAD", path: "nested" });
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.value.isRepo, true);
+    assert.equal(envelope.value.path.startsWith(".dsh-git-graph/archives/"), true);
+    assert.equal(fs.existsSync(path.join(workspaceRoot, envelope.value.path)), true, "the archive lands in the workspace root");
+  } finally {
+    workspaceHost.dispose();
+  }
+
+  /* A symlinked .dsh-git-graph directory must not move the archive outside the workspace. */
+  const symlinkRepo = createScratchRepo("archive-symlink");
+  writeFile(path.join(symlinkRepo, "a.txt"), "a\n");
+  commitAll(symlinkRepo, "base");
+  const outsideDir = path.join(fixture.root, "archive-outside");
+  fs.mkdirSync(outsideDir);
+  fs.symlinkSync(outsideDir, path.join(symlinkRepo, ".dsh-git-graph"), "dir");
+  const symlinkHost = createHost({ config: undefined, defaultDirectory: symlinkRepo });
+  try {
+    const envelope = await post(symlinkHost, ARCHIVE_PATH, { ref: "HEAD" });
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.error.code, "OUTSIDE_WORKSPACE");
+    assert.deepEqual(fs.readdirSync(outsideDir), [], "nothing is written outside the workspace");
+  } finally {
+    symlinkHost.dispose();
+  }
+});
+
+test("avatars follow repository.commits.fetchAvatars and use Gravatar md5 URLs", async () => {
+  assert.equal(md5Hex("test@example.com"), "55502f40dc8b7c769880b10874abc9d0");
+  assert.equal(
+    avatarUrl(" Test@Example.COM "),
+    "https://secure.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=64&d=identicon",
+  );
+  for (const empty of ["", "   ", null, undefined, 42, "not-an-email", "a@b@c"]) {
+    assert.equal(avatarUrl(empty), null, JSON.stringify(empty));
+  }
+
+  const dir = createScratchRepo("avatars");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  const head = commitAll(dir, "A");
+  const expected = avatarUrl("graph@example.com");
+  const avatarHost = createHost({ config: undefined, defaultDirectory: dir });
+  const enabledHost = createHost({ config: { "repository.commits.fetchAvatars": true }, defaultDirectory: dir });
+  try {
+    const disabled = await post(avatarHost, GRAPH_PATH, {});
+    assert.equal(disabled.value.presentation.avatars, false);
+    assert.equal("authorAvatar" in disabled.value.commits[0], false, "disabled adds no graph fields");
+    assert.equal("committerAvatar" in disabled.value.commits[0], false);
+    const disabledCommit = await post(avatarHost, COMMIT_PATH, { hash: head });
+    assert.equal("authorAvatar" in disabledCommit.value, false);
+    assert.equal("committerAvatar" in disabledCommit.value, false);
+
+    const enabled = await post(enabledHost, GRAPH_PATH, {});
+    assert.equal(enabled.value.presentation.avatars, true);
+    assert.equal(enabled.value.commits[0].authorAvatar, expected);
+    assert.equal(enabled.value.commits[0].committerAvatar, expected);
+    const commitDetail = await post(enabledHost, COMMIT_PATH, { hash: head });
+    assert.equal(commitDetail.value.authorAvatar, expected);
+    assert.equal(commitDetail.value.committerAvatar, expected);
+
+    const legacyHost = createHost({ config: { fetchAvatars: true }, defaultDirectory: dir });
+    try {
+      const legacy = await post(legacyHost, GRAPH_PATH, {});
+      assert.equal(legacy.value.commits[0].authorAvatar, expected, "the legacy flat alias folds in");
+      assert.equal(legacy.value.presentation.avatars, true);
+    } finally {
+      legacyHost.dispose();
+    }
+
+    const invalidHost = createHost({ config: { "repository.commits.fetchAvatars": 7 }, defaultDirectory: dir });
+    try {
+      const invalid = await post(invalidHost, GRAPH_PATH, {});
+      assert.equal(invalid.value.presentation.avatars, false);
+      assert.equal("authorAvatar" in invalid.value.commits[0], false, "an invalid value keeps avatars off");
+    } finally {
+      invalidHost.dispose();
+    }
+  } finally {
+    avatarHost.dispose();
+    enabledHost.dispose();
+  }
+});
+
+test("pr route builds github URLs from https and ssh remotes", async () => {
+  const dir = createScratchRepo("pr-github");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], dir);
+
+  const prHost = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const value = (await post(prHost, PR_PATH, {})).value;
+    assert.equal(value.isRepo, true);
+    assert.deepEqual(value.remote, {
+      name: "origin",
+      url: "https://github.com/acme/widget.git",
+      provider: "github",
+      owner: "acme",
+      repo: "widget",
+      webUrl: "https://github.com/acme/widget",
+    });
+    assert.equal(value.branch, "main");
+    assert.equal(value.base, "main");
+    assert.equal(value.url, "https://github.com/acme/widget/compare/main...main?expand=1");
+    assert.deepEqual(value.custom, []);
+
+    const overridden = (await post(prHost, PR_PATH, { branch: "feature/add", base: "develop" })).value;
+    assert.equal(overridden.url, "https://github.com/acme/widget/compare/develop...feature/add?expand=1");
+
+    runGit(["remote", "set-url", "origin", "git@github.com:acme/widget.git"], dir);
+    const scp = (await post(prHost, PR_PATH, {})).value;
+    assert.equal(scp.remote.provider, "github");
+    assert.equal(scp.remote.url, "git@github.com:acme/widget.git");
+    assert.equal(scp.url, "https://github.com/acme/widget/compare/main...main?expand=1");
+
+    runGit(["remote", "set-url", "origin", "ssh://git@github.com/acme/widget.git"], dir);
+    const sshScheme = (await post(prHost, PR_PATH, {})).value;
+    assert.equal(sshScheme.remote.provider, "github");
+    assert.equal(sshScheme.url, "https://github.com/acme/widget/compare/main...main?expand=1");
+
+    for (const bad of [{ branch: "-x" }, { branch: 42 }, { base: "a..b" }]) {
+      const rejected = await post(prHost, PR_PATH, bad);
+      assert.equal(rejected.ok, false, JSON.stringify(bad));
+      assert.equal(rejected.error.code, "BAD_REQUEST", JSON.stringify(bad));
+    }
+  } finally {
+    prHost.dispose();
+  }
+});
+
+test("pr route recognizes gitlab subgroups, bitbucket, other and unknown remotes", async () => {
+  const remoteValue = async (name, remoteUrl) => {
+    const dir = createScratchRepo(name);
+    writeFile(path.join(dir, "a.txt"), "a\n");
+    commitAll(dir, "base");
+    runGit(["remote", "add", "origin", remoteUrl], dir);
+    const providerHost = createHost({ config: undefined, defaultDirectory: dir });
+    try {
+      return (await post(providerHost, PR_PATH, {})).value;
+    } finally {
+      providerHost.dispose();
+    }
+  };
+
+  const gitlab = await remoteValue("pr-gitlab", "https://gitlab.com/group/sub/project.git");
+  assert.equal(gitlab.remote.provider, "gitlab");
+  assert.equal(gitlab.remote.owner, "group/sub");
+  assert.equal(gitlab.remote.repo, "project");
+  assert.equal(gitlab.remote.webUrl, "https://gitlab.com/group/sub/project");
+  assert.equal(
+    gitlab.url,
+    "https://gitlab.com/group/sub/project/-/merge_requests/new?merge_request[source_branch]=main&merge_request[target_branch]=main",
+  );
+
+  const gitlabSsh = await remoteValue("pr-gitlab-ssh", "git@gitlab.com:group/sub/project.git");
+  assert.equal(gitlabSsh.remote.provider, "gitlab");
+  assert.equal(gitlabSsh.remote.owner, "group/sub");
+  assert.equal(gitlabSsh.remote.repo, "project");
+
+  const bitbucket = await remoteValue("pr-bitbucket", "https://bitbucket.org/acme/widget.git");
+  assert.equal(bitbucket.remote.provider, "bitbucket");
+  assert.equal(bitbucket.remote.webUrl, "https://bitbucket.org/acme/widget");
+  assert.equal(bitbucket.url, "https://bitbucket.org/acme/widget/pull-requests/new?source=main&dest=main");
+
+  const other = await remoteValue("pr-other", "https://git.example.com/acme/widget.git");
+  assert.equal(other.remote.provider, "other");
+  assert.equal(other.remote.owner, "acme");
+  assert.equal(other.remote.repo, "widget");
+  assert.equal(other.remote.webUrl, "https://git.example.com/acme/widget");
+  assert.equal(other.url, null, "no built-in URL for an unrecognized provider");
+
+  const unknown = await remoteValue("pr-unknown", "git@example.com:acme/widget.git");
+  assert.equal(unknown.remote.provider, "unknown");
+  assert.equal(unknown.remote.webUrl, null);
+  assert.equal(unknown.url, null);
+
+  /* origin is preferred; the first configured remote is the fallback. */
+  const selectionDir = createScratchRepo("pr-selection");
+  writeFile(path.join(selectionDir, "a.txt"), "a\n");
+  commitAll(selectionDir, "base");
+  runGit(["remote", "add", "upstream", "https://github.com/up/acme.git"], selectionDir);
+  const selectionHost = createHost({ config: undefined, defaultDirectory: selectionDir });
+  try {
+    const fallback = (await post(selectionHost, PR_PATH, {})).value;
+    assert.equal(fallback.remote.name, "upstream");
+    runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], selectionDir);
+    const preferred = (await post(selectionHost, PR_PATH, {})).value;
+    assert.equal(preferred.remote.name, "origin");
+  } finally {
+    selectionHost.dispose();
+  }
+});
+
+test("pr route resolves the base from origin/HEAD, main or master and rejects edge cases", async () => {
+  const remoteHeadDir = createScratchRepo("pr-base-remote-head");
+  writeFile(path.join(remoteHeadDir, "a.txt"), "a\n");
+  const remoteHeadCommit = commitAll(remoteHeadDir, "base");
+  runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], remoteHeadDir);
+  runGit(["update-ref", "refs/remotes/origin/release", remoteHeadCommit], remoteHeadDir);
+  runGit(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release"], remoteHeadDir);
+  const remoteHeadHost = createHost({ config: undefined, defaultDirectory: remoteHeadDir });
+  try {
+    const value = (await post(remoteHeadHost, PR_PATH, {})).value;
+    assert.equal(value.base, "release", "origin/HEAD wins over the local main branch");
+    assert.equal(value.url, "https://github.com/acme/widget/compare/release...main?expand=1");
+  } finally {
+    remoteHeadHost.dispose();
+  }
+
+  const masterDir = createScratchRepo("pr-base-master");
+  writeFile(path.join(masterDir, "a.txt"), "a\n");
+  commitAll(masterDir, "base");
+  runGit(["branch", "-m", "main", "master"], masterDir);
+  runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], masterDir);
+  const masterHost = createHost({ config: undefined, defaultDirectory: masterDir });
+  try {
+    const value = (await post(masterHost, PR_PATH, {})).value;
+    assert.equal(value.base, "master", "master is the fallback when main does not exist");
+  } finally {
+    masterHost.dispose();
+  }
+
+  const detachedDir = createScratchRepo("pr-detached");
+  writeFile(path.join(detachedDir, "a.txt"), "a\n");
+  commitAll(detachedDir, "base");
+  runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], detachedDir);
+  runGit(["checkout", "-q", "--detach", "HEAD"], detachedDir);
+  const detachedHost = createHost({ config: undefined, defaultDirectory: detachedDir });
+  try {
+    const rejected = await post(detachedHost, PR_PATH, {});
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.error.code, "BAD_REQUEST");
+    assert.match(rejected.error.message, /detached HEAD/);
+    const explicit = await post(detachedHost, PR_PATH, { branch: "detached-fix" });
+    assert.equal(explicit.ok, true, "an explicit branch still works from a detached HEAD");
+  } finally {
+    detachedHost.dispose();
+  }
+
+  const noRemoteDir = createScratchRepo("pr-no-remote");
+  writeFile(path.join(noRemoteDir, "a.txt"), "a\n");
+  commitAll(noRemoteDir, "base");
+  const noRemoteHost = createHost({ config: undefined, defaultDirectory: noRemoteDir });
+  try {
+    const rejected = await post(noRemoteHost, PR_PATH, {});
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.error.code, "BAD_REQUEST");
+    assert.match(rejected.error.message, /no remote/);
+  } finally {
+    noRemoteHost.dispose();
+  }
+
+  const outsideHost = createHost({ config: undefined, defaultDirectory: fixture.empty });
+  try {
+    const envelope = await post(outsideHost, PR_PATH, {});
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.value.isRepo, false);
+  } finally {
+    outsideHost.dispose();
+  }
+});
+
+test("pr route renders custom provider templates with upstream variable semantics", async () => {
+  const dir = createScratchRepo("pr-custom");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  runGit(["remote", "add", "origin", "https://github.com/acme/widget.git"], dir);
+
+  const templateUrl = "$1/$2/$3/compare/$4?dest=$5/$6&db=$8&project=$7&literal=$9";
+  const customHost = createHost({
+    config: {
+      customPullRequestProviders: [
+        { name: "Gitea", templateUrl },
+        { name: "Missing template" },
+        { name: "", templateUrl: "https://ignored.example" },
+        { name: "Broken", templateUrl: 42 },
+      ],
+    },
+    defaultDirectory: dir,
+  });
+  try {
+    const value = (await post(customHost, PR_PATH, { branch: "feature/x", base: "develop" })).value;
+    assert.deepEqual(value.custom, [
+      {
+        name: "Gitea",
+        url: "https://github.com/acme/widget/compare/feature/x?dest=acme/widget&db=develop&project=&literal=$9",
+      },
+    ]);
+    const defaulted = (await post(customHost, PR_PATH, {})).value;
+    assert.equal(defaulted.custom.length, 1);
+    assert.match(defaulted.custom[0].url, /compare\/main\?dest=acme\/widget&db=main&project=&literal=\$9$/);
+  } finally {
+    customHost.dispose();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Wave 9-B: cross-workspace review management and repository config
+// ---------------------------------------------------------------------------
+
+test("review scopes list every session and end removes scopes", async () => {
+  const repoA = createScratchRepo("review-scope-a");
+  writeFile(path.join(repoA, "a.txt"), "a\n");
+  const headA = commitAll(repoA, "A");
+  const repoB = createScratchRepo("review-scope-b");
+  writeFile(path.join(repoB, "b.txt"), "b\n");
+  const headB = commitAll(repoB, "B");
+  const realA = fs.realpathSync(repoA);
+  const realB = fs.realpathSync(repoB);
+
+  const storage = createFakeStorageDomain();
+  const host = createHost({ config: undefined, defaultDirectory: fixture.root, storageDomain: storage.service });
+  try {
+    const toggledA = await post(host, REVIEW_PATH, {
+      sessionId: "s1",
+      path: "review-scope-a",
+      action: "toggle",
+      kind: "commit",
+      base: headA,
+      head: headA,
+      file: "a.txt",
+    });
+    assert.equal(toggledA.ok, true);
+    const toggledB = await post(host, REVIEW_PATH, {
+      sessionId: "s2",
+      path: "review-scope-b",
+      action: "toggle",
+      kind: "commit",
+      base: headB,
+      head: headB,
+      file: "b.txt",
+    });
+    assert.equal(toggledB.ok, true);
+
+    /* New entries record the resolved repository root. */
+    assert.equal(storage.records.get("s1").entries[0].repoPath, realA);
+    assert.equal(storage.records.get("s2").entries[0].repoPath, realB);
+
+    const scopes = await post(host, REVIEW_PATH, { action: "scopes" });
+    assert.equal(scopes.ok, true);
+    assert.equal(scopes.value.scopes.length, 2);
+    const bySession = new Map(scopes.value.scopes.map((row) => [row.sessionId, row]));
+    assert.deepEqual(bySession.get("s1"), {
+      sessionId: "s1",
+      repoPath: realA,
+      kind: "commit",
+      base: headA,
+      head: headA,
+      reviewed: 1,
+      total: 1,
+      updatedAt: bySession.get("s1").updatedAt,
+    });
+    assert.deepEqual(bySession.get("s2"), {
+      sessionId: "s2",
+      repoPath: realB,
+      kind: "commit",
+      base: headB,
+      head: headB,
+      reviewed: 1,
+      total: 1,
+      updatedAt: bySession.get("s2").updatedAt,
+    });
+    assert.ok(scopes.value.scopes[0].updatedAt >= scopes.value.scopes[1].updatedAt, "newest first");
+
+    /* A repository that no longer exists keeps its row with total:null. */
+    fs.rmSync(repoB, { recursive: true, force: true });
+    const afterDelete = await post(host, REVIEW_PATH, { action: "scopes" });
+    const rowB = afterDelete.value.scopes.find((row) => row.sessionId === "s2");
+    assert.equal(rowB.repoPath, realB);
+    assert.equal(rowB.total, null, "a deleted repository cannot compute a total");
+    assert.equal(rowB.reviewed, 1);
+    assert.equal(afterDelete.value.scopes.length, 2);
+
+    /* Legacy entries without repoPath stay readable with repoPath:null. */
+    storage.records.set("legacy", {
+      entries: [{ kind: "commit", base: headA, head: headA, files: { "a.txt": Date.now() }, updatedAt: Date.now() }],
+    });
+    const legacyScopes = await post(host, REVIEW_PATH, { action: "scopes" });
+    const legacyRow = legacyScopes.value.scopes.find((row) => row.sessionId === "legacy");
+    assert.equal(legacyRow.repoPath, null);
+    assert.equal(legacyRow.total, null);
+    assert.equal(legacyRow.reviewed, 1);
+    const legacyRead = await post(host, REVIEW_PATH, {
+      sessionId: "legacy",
+      path: "review-scope-a",
+      action: "read",
+      kind: "commit",
+      base: headA,
+      head: headA,
+    });
+    assert.equal(legacyRead.ok, true);
+    assert.equal(legacyRead.value.reviewed, 1, "old entries are still readable");
+
+    /* End by scope removes exactly the named entry. */
+    const ended = await post(host, REVIEW_PATH, {
+      action: "end",
+      scopes: [{ sessionId: "s1", kind: "commit", base: headA, head: headA }],
+    });
+    assert.deepEqual(ended.value, { ended: 1 });
+    const afterEnd = await post(host, REVIEW_PATH, { action: "scopes" });
+    assert.equal(afterEnd.value.scopes.some((row) => row.sessionId === "s1"), false);
+    assert.equal(afterEnd.value.scopes.some((row) => row.sessionId === "s2"), true);
+
+    /* End all clears every remaining session. */
+    const endedAll = await post(host, REVIEW_PATH, { action: "end", all: true });
+    assert.deepEqual(endedAll.value, { ended: 2 });
+    assert.deepEqual((await post(host, REVIEW_PATH, { action: "scopes" })).value.scopes, []);
+
+    const badEnd = await post(host, REVIEW_PATH, { action: "end" });
+    assert.equal(badEnd.ok, false);
+    assert.equal(badEnd.error.code, "BAD_REQUEST");
+    const badScope = await post(host, REVIEW_PATH, { action: "end", scopes: [{ sessionId: "s1", kind: "commit" }] });
+    assert.equal(badScope.ok, false);
+    assert.equal(badScope.error.code, "BAD_REQUEST");
+  } finally {
+    host.dispose();
+  }
+});
+
+test("repository config export, import and clear drive the effective settings", async () => {
+  const dir = createScratchRepo("repo-config");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  const filePath = path.join(dir, ".gitgraph.json");
+  const host = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const initial = await post(host, REPOCONFIG_PATH, { action: "status" });
+    assert.equal(initial.ok, true);
+    assert.equal(initial.value.isRepo, true);
+    assert.equal(initial.value.present, false);
+    assert.equal(initial.value.valid, false);
+    assert.equal(initial.value.path, ".gitgraph.json");
+    assert.deepEqual(initial.value.keys, []);
+    assert.deepEqual(initial.value.overrides, {});
+
+    /* Export with no non-default settings writes an empty settings object. */
+    const exported = await post(host, REPOCONFIG_PATH, { action: "export" });
+    assert.equal(exported.ok, true);
+    assert.equal(exported.value.path, ".gitgraph.json");
+    assert.deepEqual(exported.value.keys, []);
+    assert.ok(exported.value.bytes > 0);
+    const exportedFile = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    assert.equal(exportedFile.version, 1);
+    assert.equal(typeof exportedFile.exportedAt, "string");
+    assert.deepEqual(exportedFile.settings, {});
+
+    /* Edit the file: a valid override must change the effective settings. */
+    const overrides = { "repository.commits.initialLoad": 50, "graph.style": "angular" };
+    fs.writeFileSync(
+      filePath,
+      `${JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), settings: overrides }, null, 2)}\n`,
+    );
+    const future = new Date(Date.now() + 2000);
+    fs.utimesSync(filePath, future, future);
+
+    const status = await post(host, REPOCONFIG_PATH, { action: "status" });
+    assert.equal(status.value.present, true);
+    assert.equal(status.value.valid, true);
+    assert.deepEqual(status.value.keys, ["repository.commits.initialLoad", "graph.style"]);
+    assert.deepEqual(status.value.overrides, overrides);
+
+    const imported = await post(host, REPOCONFIG_PATH, { action: "import" });
+    assert.equal(imported.ok, true);
+    assert.deepEqual(imported.value.keys, ["repository.commits.initialLoad", "graph.style"]);
+    assert.equal(imported.value.applied, 2);
+    assert.deepEqual(imported.value.unknown, []);
+    assert.deepEqual(imported.value.invalid, []);
+
+    /* 60 commits make the override (initialLoad 50) observable. */
+    importLinearHistory(dir, 60);
+    const graph = await post(host, GRAPH_PATH, {});
+    assert.equal(graph.ok, true);
+    assert.equal(graph.value.commits.length, 50, "the repository initialLoad override applies");
+    assert.equal(graph.value.truncated, true);
+    assert.equal(graph.value.presentation.graphStyle, "angular", "the repository graph.style override applies");
+    const requestLimit = await post(host, GRAPH_PATH, { limit: 5 });
+    assert.equal(requestLimit.value.commits.length, 5, "a request limit still wins");
+
+    /* Clear removes the file and restores the plugin defaults. */
+    const cleared = await post(host, REPOCONFIG_PATH, { action: "clear" });
+    assert.equal(cleared.ok, true);
+    assert.equal(cleared.value.cleared, true);
+    assert.equal(fs.existsSync(filePath), false);
+    const afterClear = await post(host, GRAPH_PATH, {});
+    assert.equal(afterClear.value.commits.length, 60, "no override: 60 < the default page size");
+    assert.equal(afterClear.value.presentation.graphStyle, "rounded");
+
+    /* Import reports unknown and invalid settings without applying them blindly. */
+    fs.writeFileSync(
+      filePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          settings: { "not.a.setting": 1, "repository.showTags": "not-a-boolean", "repository.commits.initialLoad": 7 },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const reported = await post(host, REPOCONFIG_PATH, { action: "import" });
+    assert.equal(reported.ok, true);
+    assert.equal(reported.value.applied, 2);
+    assert.deepEqual(reported.value.unknown, ["not.a.setting"]);
+    assert.equal(reported.value.invalid.some((entry) => entry.key === "repository.showTags"), true);
+    const reportedGraph = await post(host, GRAPH_PATH, {});
+    assert.equal(reportedGraph.value.commits.length, 7, "the valid part of the file still applies");
+
+    await post(host, REPOCONFIG_PATH, { action: "clear" });
+    const missingImport = await post(host, REPOCONFIG_PATH, { action: "import" });
+    assert.equal(missingImport.ok, false);
+    assert.equal(missingImport.error.code, "BAD_REQUEST");
+  } finally {
+    host.dispose();
+  }
+
+  /* Export also captures non-default settings from the plugin configuration. */
+  const configuredDir = createScratchRepo("repo-config-base");
+  writeFile(path.join(configuredDir, "a.txt"), "a\n");
+  commitAll(configuredDir, "base");
+  const configuredHost = createHost({ config: { "graph.style": "angular" }, defaultDirectory: configuredDir });
+  try {
+    const configuredExport = await post(configuredHost, REPOCONFIG_PATH, { action: "export" });
+    assert.deepEqual(configuredExport.value.keys, ["graph.style"]);
+    const configuredFile = JSON.parse(fs.readFileSync(path.join(configuredDir, ".gitgraph.json"), "utf8"));
+    assert.deepEqual(configuredFile.settings, { "graph.style": "angular" });
+  } finally {
+    configuredHost.dispose();
+  }
+});
+
+test("repository config overrides reach uncommitted and fetch defaults", async () => {
+  const dir = createScratchRepo("repo-config-behaviour");
+  writeFile(path.join(dir, "tracked.txt"), "one\n");
+  commitAll(dir, "base");
+  writeFile(path.join(dir, "untracked.txt"), "new\n");
+  const bare = createBareRemote("repo-config-behaviour.git");
+  runGit(["remote", "add", "origin", bare], dir);
+  runGit(["push", "-q", "-u", "origin", "main"], dir);
+  const filePath = path.join(dir, ".gitgraph.json");
+  fs.writeFileSync(
+    filePath,
+    `${JSON.stringify(
+      { version: 1, exportedAt: new Date().toISOString(), settings: { "repository.showUntrackedFiles": false, "repository.fetchAndPrune": true } },
+      null,
+      2,
+    )}\n`,
+  );
+  const future = new Date(Date.now() + 2000);
+  fs.utimesSync(filePath, future, future);
+
+  const host = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    const uncommitted = await post(host, UNCOMMITTED_PATH, {});
+    assert.equal(uncommitted.ok, true);
+    assert.deepEqual(uncommitted.value.untracked, [], "showUntrackedFiles override applies to /uncommitted");
+    assert.equal(uncommitted.value.counts.untracked, 0);
+
+    const fetched = await post(host, ACTION_PATH, { action: "fetch" });
+    assert.equal(fetched.ok, true);
+    assert.match(fetched.value.message, /with --prune\.$/, "fetchAndPrune override applies to /action fetch");
+
+    await post(host, REPOCONFIG_PATH, { action: "clear" });
+    const restoredUncommitted = await post(host, UNCOMMITTED_PATH, {});
+    assert.equal(restoredUncommitted.value.counts.untracked, 1);
+    const restoredFetch = await post(host, ACTION_PATH, { action: "fetch" });
+    assert.equal(restoredFetch.value.message, "Fetched from all remotes.");
+  } finally {
+    host.dispose();
+  }
+});
+
+test("repository config rejects invalid JSON and oversized files without crashing", async () => {
+  const dir = createScratchRepo("repo-config-invalid");
+  writeFile(path.join(dir, "a.txt"), "a\n");
+  commitAll(dir, "base");
+  const filePath = path.join(dir, ".gitgraph.json");
+  const host = createHost({ config: undefined, defaultDirectory: dir });
+  try {
+    fs.writeFileSync(filePath, "{not json", "utf8");
+    const invalidStatus = await post(host, REPOCONFIG_PATH, { action: "status" });
+    assert.equal(invalidStatus.ok, true);
+    assert.equal(invalidStatus.value.present, true);
+    assert.equal(invalidStatus.value.valid, false);
+    assert.deepEqual(invalidStatus.value.keys, []);
+    assert.match(invalidStatus.value.error, /invalid JSON/);
+    const invalidImport = await post(host, REPOCONFIG_PATH, { action: "import" });
+    assert.equal(invalidImport.ok, false);
+    assert.equal(invalidImport.error.code, "BAD_REQUEST");
+    const graphDespite = await post(host, GRAPH_PATH, {});
+    assert.equal(graphDespite.ok, true, "an invalid file never breaks requests");
+    assert.equal(graphDespite.value.presentation.graphStyle, "rounded");
+
+    fs.writeFileSync(filePath, "x".repeat(140_000), "utf8");
+    const oversizedStatus = await post(host, REPOCONFIG_PATH, { action: "status" });
+    assert.equal(oversizedStatus.value.present, true);
+    assert.equal(oversizedStatus.value.valid, false);
+    assert.match(oversizedStatus.value.error, /larger than/);
+    const oversizedImport = await post(host, REPOCONFIG_PATH, { action: "import" });
+    assert.equal(oversizedImport.ok, false);
+    assert.equal(oversizedImport.error.code, "BAD_REQUEST");
+    const graphStillWorks = await post(host, GRAPH_PATH, {});
+    assert.equal(graphStillWorks.ok, true);
+
+    /* Export recovers an invalid file with a valid empty-settings document. */
+    const recovered = await post(host, REPOCONFIG_PATH, { action: "export" });
+    assert.equal(recovered.ok, true);
+    const recoveredFile = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    assert.deepEqual(recoveredFile.settings, {});
+  } finally {
+    host.dispose();
+  }
 });

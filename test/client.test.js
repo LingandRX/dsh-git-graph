@@ -220,6 +220,60 @@ const CONTRACT_KEYS = [
   "file.status.T",
   "file.status.U",
   "file.status.other",
+  "column.header",
+  "column.date",
+  "column.author",
+  "column.commit",
+  "column.resize",
+  "menu.archive",
+  "archive.title",
+  "archive.ref",
+  "archive.format",
+  "archive.zip",
+  "archive.tarGz",
+  "archive.confirm",
+  "archive.running",
+  "archive.failed",
+  "archive.path",
+  "archive.size",
+  "archive.copy",
+  "archive.notRepo",
+  "menu.pr",
+  "menu.reviewManager",
+  "menu.repoConfig",
+  "pr.title",
+  "pr.provider",
+  "pr.branches",
+  "pr.source",
+  "pr.copy",
+  "pr.open",
+  "pr.noUrl",
+  "pr.noRemote",
+  "pr.failed",
+  "review.managerTitle",
+  "review.unknownRepo",
+  "review.noScopes",
+  "review.end",
+  "review.endAll",
+  "review.endAllConfirm",
+  "review.unavailable",
+  "review.failed",
+  "repoconfig.title",
+  "repoconfig.present",
+  "repoconfig.absent",
+  "repoconfig.pathLabel",
+  "repoconfig.keys",
+  "repoconfig.export",
+  "repoconfig.import",
+  "repoconfig.clear",
+  "repoconfig.exported",
+  "repoconfig.imported",
+  "repoconfig.unknown",
+  "repoconfig.invalid",
+  "repoconfig.clearConfirm",
+  "repoconfig.cleared",
+  "repoconfig.failed",
+  "repoconfig.invalidFile",
   "compare.workingTitle",
   "compare.workingTree",
   "common.refresh",
@@ -347,7 +401,13 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody }",
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, " +
+        "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
+        "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
+        "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
+        "prRequest, prValueOf, prUrlChoices, openExternalUrl, reviewScopesRequest, reviewEndRequest, " +
+        "reviewEndAllRequest, reviewScopeLabel, normalizeReviewScopes, repoConfigRequest, repoConfigValueOf, " +
+        "conflictLabel, PullRequestDialog, ReviewManagerPanel, RepoConfigPanel }",
     ),
     fetchImpl,
     reactImpl,
@@ -1784,11 +1844,12 @@ test("commitActionItems adds merge, rebase, drop and reset with drop guardrails"
     { hash: "h1", parents: [] },
   ];
   const items = commitActionItems({ hash: "h2", parents: ["h1"] }, { headHash: "h3", commits });
-  assert.deepEqual(Array.from(items, (item) => item.id), ["compare-working", "merge", "rebase", "drop-commit", "reset-commit"]);
-  assert.deepEqual(Array.from(items, (item) => item.kind), ["compareWorking", "merge", "rebase", "dropCommit", "resetToCommit"]);
-  assert.deepEqual(Array.from(items, (item) => item.labelKey), ["menu.compareWorking", "action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit"]);
+  assert.deepEqual(Array.from(items, (item) => item.id), ["compare-working", "merge", "rebase", "drop-commit", "reset-commit", "archive"]);
+  assert.deepEqual(Array.from(items, (item) => item.kind), ["compareWorking", "merge", "rebase", "dropCommit", "resetToCommit", "archive"]);
+  assert.deepEqual(Array.from(items, (item) => item.labelKey), ["menu.compareWorking", "action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit", "menu.archive"]);
   assert.equal(items[1].after, "create-branch");
   assert.equal(items[4].after, "drop-commit");
+  assert.equal(items[5].after, "copy-hash", "the archive item lands after copy-hash");
   // h2 still has h3 as a child, so dropping it would rewrite reachable history.
   const drop = items.find((item) => item.kind === "dropCommit");
   assert.equal(drop.disabled, true);
@@ -2288,6 +2349,7 @@ test("presentationOf normalizes the graph presentation settings", () => {
     loadMoreAutomatically: false,
     dialogDefaults: {},
     contextMenuVisibility: {},
+    avatars: false,
   };
   const defaults = presentationOf(null);
   assert.deepEqual(plain(defaults), {
@@ -2342,6 +2404,7 @@ test("presentationOf normalizes the graph presentation settings", () => {
         stashUncommittedChanges: { includeUntracked: true },
       },
       contextMenuVisibility: { commit: { cherryPick: false }, branch: { deleteBranch: true } },
+      avatars: true,
     },
   });
   assert.deepEqual(plain(configured), {
@@ -2369,6 +2432,7 @@ test("presentationOf normalizes the graph presentation settings", () => {
       stashUncommittedChanges: { includeUntracked: true },
     },
     contextMenuVisibility: { commit: { cherryPick: false }, branch: { deleteBranch: true } },
+    avatars: true,
     dateType: "Commit Date",
     dateFormat: "ISO Date Only",
     columnVisibility: { Date: false, Author: true, Commit: false },
@@ -3002,13 +3066,20 @@ test("Toolbar exposes the three column visibility checkboxes", () => {
 test("CommitRow omits hidden meta segments", () => {
   const { CommitRow } = loadInternals();
   const commit = { hash: "h1", abbrev: "h1", subject: "Subject", parents: [], refs: [], authorName: "Ann", authorTime: 1700000000 };
-  const metaOf = (visibility) => {
+  const segmentsOf = (visibility) => {
     const tree = CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), metaVisibility: visibility });
-    return collectElements(tree).find((element) => String(element.props.className || "").includes("dgg-meta")).children.join("");
+    const meta = collectElements(tree).find((element) => String(element.props.className || "").includes("dgg-meta"));
+    return collectElements(meta)
+      .filter((element) => String(element.props.className || "").includes("dgg-meta-col"))
+      .map((element) => (((String(element.props.className || "").match(/dgg-meta-(date|author|commit)/) || [])[1] || "?") + ":" + element.children.join("")));
   };
-  assert.match(metaOf(undefined), /^h1 · Ann · /);
-  assert.equal(metaOf({ author: false, date: false, hash: false }), "");
-  assert.equal(metaOf({ hash: false, date: false }).includes("h1"), false);
+  const all = segmentsOf(undefined);
+  assert.equal(all.length, 3);
+  assert.match(all[0], /^date:/, "Date is the first (header-aligned) segment");
+  assert.equal(all[1], "author:Ann");
+  assert.equal(all[2], "commit:h1");
+  assert.deepEqual(segmentsOf({ author: false, date: false, hash: false }), []);
+  assert.equal(segmentsOf({ hash: false, date: false }).some((segment) => segment.endsWith("h1")), false);
 });
 
 // ── wave 7: file tree ───────────────────────────────────────────────────────
@@ -4824,4 +4895,640 @@ test("missing presentation keeps the part-2 defaults", () => {
   const plainFile = collectElements(FileRow({ t: (key) => key, file: { status: "A", path: "a.txt" }, cache: { current: new Map() } }));
   assert.equal(plainFile.some((element) => String(element.props.className || "").includes("dgg-st-text")), false);
   assert.equal(fileStatusKey("A"), "file.status.A");
+});
+
+// ── wave 9: column widths, avatars, archive export ─────────────────────────
+
+/** In-memory Storage stand-in for the persisted column widths. */
+function createFakeStorage(initial) {
+  const data = new Map(Object.entries(initial ?? {}));
+  return {
+    data,
+    getItem(key) {
+      return data.has(key) ? data.get(key) : null;
+    },
+    setItem(key, value) {
+      data.set(key, String(value));
+    },
+  };
+}
+
+test("column width helpers clamp, resize, reset and serialize", () => {
+  const {
+    COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, COLUMN_WIDTH_STORAGE_KEY,
+    clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars,
+    normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths,
+  } = loadInternals();
+  assert.deepEqual(plain(COLUMN_WIDTH_DEFAULTS), { date: 96, author: 132, commit: 78 });
+  assert.deepEqual(plain(COLUMN_WIDTH_RANGES), { date: [48, 200], author: [64, 260], commit: [64, 220] });
+  assert.equal(COLUMN_WIDTH_STORAGE_KEY, "dsh-git-graph:column-widths:v1");
+
+  assert.equal(clampColumnWidth("date", 10), 48);
+  assert.equal(clampColumnWidth("date", 500), 200);
+  assert.equal(clampColumnWidth("author", 32), 64);
+  assert.equal(clampColumnWidth("author", 999), 260);
+  assert.equal(clampColumnWidth("commit", 10), 64);
+  assert.equal(clampColumnWidth("commit", 999), 220);
+  assert.equal(clampColumnWidth("commit", 100), 100);
+  assert.equal(clampColumnWidth("commit", 77.6), 78, "rounded");
+  assert.equal(clampColumnWidth("bogus", 100), 0);
+  assert.equal(clampColumnWidth("date", Number.NaN), 96, "invalid px falls back to the default");
+
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50)), { date: 146, author: 132, commit: 78 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "commit", -100)), { date: 96, author: 132, commit: 64 }, "clamped low");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 96, author: 260, commit: 78 }, "clamped high");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "bogus", 50)), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", Number.NaN)), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 132, commit: 100 });
+  assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 78 });
+  assert.deepEqual(plain(columnWidthVars({ date: 100, author: 140, commit: 80 })), {
+    "--dgg-col-date": "100px",
+    "--dgg-col-author": "140px",
+    "--dgg-col-commit": "80px",
+  });
+
+  // Storage: missing/unreadable/foreign data falls back to the defaults.
+  assert.deepEqual(plain(readStoredColumnWidths(null)), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(readStoredColumnWidths(createFakeStorage())), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(readStoredColumnWidths(createFakeStorage({ [COLUMN_WIDTH_STORAGE_KEY]: "not json" }))), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(readStoredColumnWidths(createFakeStorage({ [COLUMN_WIDTH_STORAGE_KEY]: "[]" }))), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(plain(readStoredColumnWidths(createFakeStorage({ [COLUMN_WIDTH_STORAGE_KEY]: JSON.stringify({ foreign: 10 }) }))), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.deepEqual(
+    plain(readStoredColumnWidths(createFakeStorage({ [COLUMN_WIDTH_STORAGE_KEY]: JSON.stringify({ date: 5, author: 500, commit: 100, extra: 2 }) }))),
+    { date: 48, author: 260, commit: 100 },
+    "stored values are clamped; known columns only",
+  );
+  const throwing = {
+    getItem() { throw new Error("denied"); },
+    setItem() { throw new Error("denied"); },
+  };
+  assert.deepEqual(plain(readStoredColumnWidths(throwing)), plain(COLUMN_WIDTH_DEFAULTS));
+  assert.equal(writeStoredColumnWidths(throwing, COLUMN_WIDTH_DEFAULTS), false);
+
+  // Round trip.
+  const storage = createFakeStorage();
+  assert.equal(writeStoredColumnWidths(storage, { date: 120, author: 150, commit: 90 }), true);
+  assert.deepEqual(plain(readStoredColumnWidths(storage)), { date: 120, author: 150, commit: 90 });
+  assert.deepEqual(JSON.parse(storage.data.get(COLUMN_WIDTH_STORAGE_KEY)), { date: 120, author: 150, commit: 90 });
+});
+
+test("column header renders draggable handles and the list applies CSS variables", () => {
+  const { ColumnHeader, columnWidthVars, COLUMN_WIDTH_DEFAULTS, GitGraphBody } = loadInternals();
+  const events = [];
+  const header = collectElements(ColumnHeader({
+    t: (key) => key,
+    columns: { date: true, author: true, hash: true },
+    onResizeStart: (column) => events.push(["start", column]),
+    onResizeMove: (column, delta) => events.push(["move", column, delta]),
+    onResizeEnd: (column) => events.push(["end", column]),
+    onReset: (column) => events.push(["reset", column]),
+  }));
+  const handles = header.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle"));
+  assert.equal(handles.length, 3, "one handle per column");
+  assert.deepEqual(header.filter((element) => String(element.props.className || "").includes("dgg-colhead-cell")).map((element) => String(element.props.className || "").match(/dgg-colhead-(date|author|commit)/)[1]), ["date", "author", "commit"]);
+  assert.equal(handles[0].props.role, "separator");
+  assert.equal(handles[0].props["aria-orientation"], "vertical");
+  assert.equal(handles[0].props["aria-label"], "column.resize: column.date");
+  assert.equal(typeof handles[0].props.onPointerDown, "function");
+  assert.equal(typeof handles[0].props.onPointerMove, "function");
+  assert.equal(typeof handles[0].props.onPointerUp, "function");
+  handles[1].props.onDoubleClick();
+  assert.deepEqual(events.at(-1), ["reset", "author"]);
+  // Pointer capture is requested on pointer-down and released on pointer-up.
+  const capture = [];
+  handles[0].props.onPointerDown({
+    preventDefault() {},
+    currentTarget: { setPointerCapture: (id) => capture.push(["set", id]) },
+    pointerId: 7,
+    clientX: 100,
+  });
+  assert.deepEqual(capture, [["set", 7]]);
+  assert.deepEqual(events.at(-1), ["start", "date"]);
+  handles[0].props.onPointerMove({ clientX: 130 });
+  assert.deepEqual(events.at(-1), ["move", "date", 30]);
+  handles[0].props.onPointerUp({ currentTarget: { releasePointerCapture: (id) => capture.push(["release", id]) } });
+  assert.deepEqual(capture.at(-1), ["release", 7]);
+  assert.deepEqual(events.at(-1), ["end", "date"]);
+  // Hidden columns are not rendered; an all-hidden header renders nothing.
+  const hidden = collectElements(ColumnHeader({ t: (key) => key, columns: { date: true, author: false, hash: false } }));
+  assert.equal(hidden.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 1);
+  assert.equal(ColumnHeader({ t: (key) => key, columns: { date: false, author: false, hash: false } }), null);
+
+  // The list container carries the CSS variables that header and rows share.
+  const graphValue = {
+    isRepo: true,
+    repoPath: "/tmp/repo",
+    workspacePath: "/tmp/repo",
+    head: { branch: "main", hash: "h1", detached: false },
+    refs: [{ name: "refs/heads/main", shortName: "main", hash: "h1", head: true }],
+    commits: [
+      { hash: "h1", parents: [], abbrev: "h1", authorName: "A", authorEmail: "a@e", authorTime: 1, committerName: "A", committerEmail: "a@e", committerTime: 1, subject: "one", refs: [] },
+    ],
+    presentation: {},
+  };
+  const react = createFakeReact({ states: [{ status: "ready", value: graphValue, error: null }] });
+  const { GitGraphBody: Body } = loadInternals(undefined, react);
+  const body = collectElements(Body({ sessionId: "session-1", t: (key) => key }));
+  const listwrap = body.find((element) => String(element.props.className || "").includes("dgg-listwrap"));
+  assert.deepEqual(plain(listwrap.props.style), plain(columnWidthVars(COLUMN_WIDTH_DEFAULTS)));
+  const headerInBody = body.find((element) => typeof element.type === "function" && element.type.name === "ColumnHeader");
+  assert.ok(headerInBody, "the list renders the header");
+  assert.equal(typeof headerInBody.props.onResizeMove, "function");
+  assert.match(SOURCE, /touch-action:none/);
+  assert.match(SOURCE, /columnWidthVars\(columnWidths\)/);
+  assert.match(SOURCE, /readStoredColumnWidths\(safeClientStorage\(\)\)/);
+  assert.match(SOURCE, /writeStoredColumnWidths\(safeClientStorage\(\), columnWidthsRef\.current\)/);
+});
+
+test("avatars render when enabled and fall back to initialed circles", () => {
+  const { Avatar, CommitRow, DetailView, avatarInitials, avatarHue, presentationOf } = loadInternals();
+  assert.equal(avatarInitials("Ann Lee", "ann@x"), "AL");
+  assert.equal(avatarInitials("ann", "ann@x"), "A", "a single-word name uses one letter");
+  assert.equal(avatarInitials("", "alice@x"), "A");
+  assert.equal(avatarInitials("", ""), "?");
+  assert.equal(avatarHue("Ann@X"), avatarHue("ann@x"), "hue is deterministic and case-insensitive");
+  assert.ok(avatarHue("ann@x") >= 0 && avatarHue("ann@x") < 360);
+  assert.notEqual(avatarHue("ann@x"), avatarHue("bob@x"));
+
+  const img = Avatar({ name: "Ann Lee", email: "ann@x", url: "https://secure.gravatar.com/avatar/x?s=64&d=identicon", size: 22 });
+  assert.equal(img.type, "img");
+  assert.equal(img.props.className, "dgg-avatar dgg-avatar-img");
+  assert.equal(img.props.src, "https://secure.gravatar.com/avatar/x?s=64&d=identicon");
+  assert.equal(img.props.alt, "AL");
+  assert.equal(img.props.referrerPolicy, "no-referrer");
+  assert.equal(img.props.loading, "lazy");
+  assert.equal(img.props.width, 22);
+  assert.equal(img.props.height, 22);
+  assert.equal(typeof img.props.onError, "function");
+
+  const fallback = Avatar({ name: "Ann Lee", email: "ann@x", url: "", size: 24 });
+  assert.equal(fallback.type, "span");
+  assert.equal(fallback.props.className, "dgg-avatar dgg-avatar-fallback");
+  assert.equal(fallback.props.role, "img");
+  assert.equal(fallback.props["aria-label"], "AL");
+  assert.equal(fallback.children.join(""), "AL");
+  assert.match(fallback.props.style.filter, /^hue-rotate\(\d+deg\)$/);
+  assert.equal(fallback.props.style.width, "24px");
+
+  const react = createFakeReact({ states: [true] });
+  const failedAvatar = loadInternals(undefined, react).Avatar;
+  const failed = failedAvatar({ name: "Ann Lee", email: "ann@x", url: "https://example.test/a.png" });
+  assert.equal(failed.type, "span", "onError falls back to the initials circle");
+  assert.equal(failed.children.join(""), "AL");
+
+  const commit = { hash: "h1", abbrev: "h1", subject: "S", parents: [], refs: [], authorName: "Ann Lee", authorEmail: "ann@x", authorAvatar: "https://example.test/a.png", authorTime: 1700000000 };
+  const withAvatar = collectElements(CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), presentation: { avatars: true } }));
+  const avatarElement = withAvatar.find((element) => typeof element.type === "function" && element.type.name === "Avatar");
+  assert.ok(avatarElement, "the commit row shows an avatar when enabled");
+  assert.equal(avatarElement.props.url, "https://example.test/a.png");
+  assert.equal(avatarElement.props.email, "ann@x");
+  assert.equal(avatarElement.props.size, 22);
+  const withoutAvatar = collectElements(CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(), presentation: { avatars: false } }));
+  assert.equal(withoutAvatar.some((element) => typeof element.type === "function" && element.type.name === "Avatar"), false, "disabled keeps today's markup");
+
+  const detailCommit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann Lee", authorEmail: "ann@x", authorTime: 1700000000,
+    authorAvatar: "https://example.test/a.png", committerName: "Ann Lee", committerEmail: "ann@x", committerTime: 1700000000,
+    subject: "S", body: "", refs: [], stats: { files: 0, insertions: 0, deletions: 0 }, files: [],
+  };
+  const common = {
+    t: (key) => key, commit: detailCommit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+  };
+  const detail = collectElements(DetailView({ ...common, presentation: { avatars: true } }));
+  assert.ok(detail.some((element) => typeof element.type === "function" && element.type.name === "Avatar"), "the detail header shows an avatar");
+  const plainDetail = collectElements(DetailView({ ...common, presentation: { avatars: false } }));
+  assert.equal(plainDetail.some((element) => typeof element.type === "function" && element.type.name === "Avatar"), false);
+
+  assert.equal(presentationOf(null).avatars, false);
+  assert.equal(presentationOf({ presentation: { avatars: true } }).avatars, true);
+});
+
+test("archive request, dialog result, errors and menu wiring", () => {
+  const { archiveRequest, formatBytes, ArchiveDialog, archiveRefItem } = loadInternals();
+  assert.equal(JSON.stringify(archiveRequest({ sessionId: "s1", ref: "h1", format: "zip" })), JSON.stringify({ sessionId: "s1", ref: "h1", format: "zip" }));
+  assert.equal(JSON.stringify(archiveRequest({ sessionId: "s1", ref: " main ", format: "tar.gz" })), JSON.stringify({ sessionId: "s1", ref: "main", format: "tar.gz" }));
+  assert.deepEqual(plain(archiveRequest({ sessionId: "s1", ref: "h1", format: "zip", path: "/repo" })), { sessionId: "s1", ref: "h1", format: "zip", path: "/repo" });
+  assert.equal(archiveRequest({ sessionId: "s1", ref: "h1", format: "rar" }).format, "zip", "unknown formats fall back to zip");
+  assert.equal(archiveRequest(null).ref, "");
+
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(1023), "1023 B");
+  assert.equal(formatBytes(1024), "1 KB");
+  assert.equal(formatBytes(1536), "1.5 KB");
+  assert.equal(formatBytes(1024 * 1024), "1 MB");
+  assert.equal(formatBytes(10 * 1024 * 1024), "10 MB");
+  assert.equal(formatBytes(Number.NaN), "");
+  assert.equal(formatBytes(-1), "");
+
+  const idle = collectElements(ArchiveDialog({
+    t: (key) => key,
+    archive: { status: "idle", ref: "main", format: "zip", value: null, error: "" },
+    onConfirm: () => {}, onCancel: () => {}, onCopy: () => {},
+  }));
+  const select = idle.find((element) => element.type === "select");
+  assert.equal(select.props.value, "zip");
+  assert.deepEqual(idle.filter((element) => element.type === "option").map((element) => element.props.value), ["zip", "tar.gz"]);
+  assert.ok(idle.some((element) => element.children.join("") === "archive.confirm"));
+  assert.ok(idle.some((element) => element.children.join("") === "action.cancel"));
+
+  const confirmed = [];
+  const cancels = [];
+  const interactive = collectElements(ArchiveDialog({
+    t: (key) => key,
+    archive: { status: "idle", ref: "main", format: "zip", value: null, error: "" },
+    onConfirm: (format) => confirmed.push(format), onCancel: () => cancels.push(true), onCopy: () => {},
+  }));
+  interactive.find((element) => element.type === "button" && element.children.join("") === "archive.confirm").props.onClick();
+  interactive.find((element) => element.type === "button" && element.children.join("") === "action.cancel").props.onClick();
+  assert.deepEqual(confirmed, ["zip"]);
+  assert.equal(cancels.length, 1);
+
+  // A tar.gz choice is submitted when the reader selected it.
+  const react = createFakeReact({ states: ["tar.gz"] });
+  const TarDialog = loadInternals(undefined, react).ArchiveDialog;
+  const tarConfirmed = [];
+  const tar = collectElements(TarDialog({
+    t: (key) => key,
+    archive: { status: "idle", ref: "main", format: "zip", value: null, error: "" },
+    onConfirm: (format) => tarConfirmed.push(format), onCancel: () => {}, onCopy: () => {},
+  }));
+  assert.equal(tar.find((element) => element.type === "select").props.value, "tar.gz");
+  tar.find((element) => element.type === "button" && element.children.join("") === "archive.confirm").props.onClick();
+  assert.deepEqual(tarConfirmed, ["tar.gz"]);
+
+  // Result state: workspace-relative path, human-readable size and copy control.
+  const copies = [];
+  const ready = collectElements(ArchiveDialog({
+    t: (key) => key,
+    archive: { status: "ready", ref: "main", format: "zip", value: { path: ".dsh-git-graph/archives/repo-main-20261021-120000.zip", name: "repo-main.zip", bytes: 1536, format: "zip", ref: "main" }, error: "" },
+    onConfirm: () => {}, onCancel: () => {}, onCopy: (text) => copies.push(text),
+  }));
+  const readyText = ready.map((element) => element.children.join("")).join(" | ");
+  assert.match(readyText, /\.dsh-git-graph\/archives\/repo-main-20261021-120000\.zip/);
+  assert.match(readyText, /1\.5 KB/);
+  assert.equal(ready.some((element) => element.props.role === "alert"), false);
+  ready.find((element) => element.type === "button" && element.children.join("") === "archive.copy").props.onClick();
+  assert.deepEqual(copies, [".dsh-git-graph/archives/repo-main-20261021-120000.zip"]);
+
+  // A non-repository answer surfaces the explanatory hint instead of a result.
+  const notRepo = collectElements(ArchiveDialog({
+    t: (key) => key,
+    archive: { status: "ready", ref: "main", format: "zip", value: { isRepo: false }, error: "" },
+    onConfirm: () => {}, onCancel: () => {}, onCopy: () => {},
+  }));
+  assert.ok(notRepo.some((element) => element.children.join("") === "archive.notRepo"));
+  assert.equal(notRepo.some((element) => String(element.props.className || "").includes("dgg-archive-result")), false);
+
+  // Error state is inline and hides the result.
+  const failed = collectElements(ArchiveDialog({
+    t: (key) => key,
+    archive: { status: "error", ref: "main", format: "zip", value: null, error: "fatal: bad revision" },
+    onConfirm: () => {}, onCancel: () => {}, onCopy: () => {},
+  }));
+  const alert = failed.find((element) => element.props.role === "alert");
+  assert.match(alert.children.join(""), /archive\.failed.*fatal: bad revision/);
+  assert.equal(failed.some((element) => String(element.props.className || "").includes("dgg-archive-result")), false);
+
+  // Ref menus: branch/tag/remote offer it, stash/HEAD do not; busy disables it.
+  assert.equal(archiveRefItem({ label: "main", kind: "branch" }, {}).length, 1);
+  assert.equal(archiveRefItem({ label: "v1", kind: "tag" }, {}).length, 1);
+  assert.equal(archiveRefItem({ label: "origin/main", kind: "remote" }, {}).length, 1);
+  assert.deepEqual(Array.from(archiveRefItem({ label: "stash@{0}", kind: "stash" }, {})), []);
+  assert.deepEqual(Array.from(archiveRefItem({ label: "HEAD", kind: "head" }, {})), []);
+  assert.equal(archiveRefItem({ label: "main", kind: "branch" }, { busy: true })[0].disabled, true);
+
+  assert.match(SOURCE, /postJson\("archive", archiveRequest\(\{ sessionId, ref: target, format, path: selectedRepo \}\), controller\.signal\)/);
+  assert.match(SOURCE, /openArchiveDialog\(target\.hash\)/);
+  assert.match(SOURCE, /openArchiveDialog\(label\)/);
+  assert.match(SOURCE, /h\(ArchiveDialog, \{/);
+});
+
+test("missing presentation keeps the wave-9 defaults", () => {
+  const { presentationOf, readStoredColumnWidths, CommitRow, COLUMN_WIDTH_DEFAULTS } = loadInternals();
+  const defaults = presentationOf(null);
+  assert.equal(defaults.avatars, false);
+  assert.deepEqual(plain(readStoredColumnWidths(null)), plain(COLUMN_WIDTH_DEFAULTS));
+  const commit = { hash: "h1", abbrev: "h1", subject: "S", parents: [], refs: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000 };
+  const row = collectElements(CommitRow({ t: (key) => key, commit, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map() }));
+  assert.equal(row.some((element) => typeof element.type === "function" && element.type.name === "Avatar"), false, "no avatar without the presentation flag");
+});
+
+// ── wave 9-B: PR dialog, review management, repository config ──────────────
+
+/** Interpolating translate stub for parameterised labels. */
+function tParams(key, params) {
+  if (params === undefined) return key;
+  return key + "(" + Object.entries(params).map(([name, value]) => name + "=" + String(value)).join(",") + ")";
+}
+
+test("PR request body and URL helpers", () => {
+  const { prRequest, prValueOf, prUrlChoices, openExternalUrl } = loadInternals();
+  assert.equal(JSON.stringify(prRequest({ sessionId: "s1" })), JSON.stringify({ sessionId: "s1" }));
+  assert.equal(JSON.stringify(prRequest({ sessionId: "s1", path: "/repo" })), JSON.stringify({ sessionId: "s1", path: "/repo" }));
+  assert.deepEqual(plain(prRequest({ sessionId: "s1", branch: "feat", base: "main", path: "/repo" })), {
+    sessionId: "s1",
+    branch: "feat",
+    base: "main",
+    path: "/repo",
+  });
+  assert.deepEqual(plain(prRequest(null)), {}, "no body members without a session");
+
+  const value = {
+    isRepo: true,
+    remote: { name: "origin", url: "git@github.com:a/b.git", provider: "github", owner: "a", repo: "b", webUrl: "https://github.com/a/b" },
+    branch: "feat",
+    base: "main",
+    url: "https://github.com/a/b/compare/main...feat?expand=1",
+    custom: [{ name: "codeberg", url: "https://codeberg.org/a/b/compare/main...feat" }, { name: "", url: "ignored" }, null],
+  };
+  const normalized = prValueOf(value);
+  assert.equal(normalized.isRepo, true);
+  assert.equal(normalized.provider, "github");
+  assert.equal(normalized.branch, "feat");
+  assert.equal(normalized.base, "main");
+  assert.equal(normalized.url, value.url);
+  assert.equal(normalized.remoteName, "origin");
+  assert.deepEqual(plain(normalized.custom), [{ name: "codeberg", url: "https://codeberg.org/a/b/compare/main...feat" }]);
+  assert.equal(prValueOf(null).provider, "unknown");
+  assert.deepEqual(Array.from(prUrlChoices(value), (choice) => choice.id + ":" + choice.name), ["default:github", "custom-0:codeberg"]);
+  assert.deepEqual(Array.from(prUrlChoices(null)), []);
+  assert.deepEqual(Array.from(prUrlChoices({ custom: [{ name: "x", url: "u" }] }), (choice) => choice.id), ["custom-0"], "custom-only responses still offer a URL");
+  assert.deepEqual(Array.from(prUrlChoices({ url: "" })), []);
+
+  const calls = [];
+  assert.equal(openExternalUrl("https://example.test/pr", { open: (url, target, features) => calls.push([url, target, features]) }), true);
+  assert.deepEqual(calls, [["https://example.test/pr", "_blank", "noopener,noreferrer"]]);
+  assert.equal(openExternalUrl("", { open() {} }), false);
+  assert.equal(openExternalUrl("https://example.test", null), false);
+  assert.equal(openExternalUrl("https://example.test", {}), false);
+  assert.equal(openExternalUrl("https://example.test", { open() { throw new Error("blocked"); } }), false, "a blocked popup is tolerated");
+});
+
+test("PullRequestDialog shows provider, base←branch, URL choices and copy/open", () => {
+  const { PullRequestDialog } = loadInternals();
+  const value = {
+    isRepo: true,
+    remote: { provider: "github" },
+    branch: "feat",
+    base: "main",
+    url: "https://github.com/a/b/compare/main...feat?expand=1",
+    custom: [{ name: "codeberg", url: "https://codeberg.org/x" }],
+  };
+  const copies = [];
+  const opens = [];
+  const tree = collectElements(PullRequestDialog({
+    t: tParams,
+    state: { status: "ready", value, error: "" },
+    onClose() {},
+    onRetry() {},
+    onCopy: (url) => copies.push(url),
+    onOpen: (url) => opens.push(url),
+  }));
+  const text = tree.map((element) => element.children.join("")).join(" | ");
+  assert.match(text, /pr\.provider/);
+  assert.match(text, /github/);
+  assert.match(text, /main ← feat/);
+  const code = tree.find((element) => String(element.props.className || "").includes("dgg-pr-url"));
+  assert.equal(code.children.join(""), value.url);
+  const options = collectElements(tree.find((element) => element.type === "select")).filter((element) => element.type === "option");
+  assert.deepEqual(Array.from(options, (option) => option.props.value), ["default", "custom-0"], "custom providers are listed as choices");
+  assert.deepEqual(Array.from(options, (option) => option.children.join("")), ["github", "codeberg"]);
+  tree.find((element) => element.type === "button" && element.children.join("") === "pr.copy").props.onClick();
+  tree.find((element) => element.type === "button" && element.children.join("") === "pr.open").props.onClick();
+  assert.deepEqual(copies, [value.url]);
+  assert.deepEqual(opens, [value.url]);
+
+  // Inline errors (no remote / detached HEAD) and loading.
+  const failed = collectElements(PullRequestDialog({ t: tParams, state: { status: "error", value: null, error: "no remote is configured" }, onClose() {}, onRetry() {}, onCopy() {}, onOpen() {} }));
+  const alert = failed.find((element) => element.props.role === "alert");
+  assert.match(alert.children.join(""), /pr\.failed: no remote is configured/);
+  const loading = collectElements(PullRequestDialog({ t: tParams, state: { status: "loading", value: null, error: "" } }));
+  assert.ok(loading.some((element) => String(element.props.className || "").includes("dgg-inline-status")));
+  const empty = collectElements(PullRequestDialog({ t: tParams, state: { status: "ready", value: { isRepo: true, remote: { provider: "unknown" }, branch: "", base: "", url: "", custom: [] }, error: "" } }));
+  assert.ok(empty.some((element) => element.children.join("") === "pr.noUrl"));
+});
+
+test("review-management request bodies and scope normalization", () => {
+  const { reviewScopesRequest, reviewEndRequest, reviewEndAllRequest, reviewScopeLabel, normalizeReviewScopes } = loadInternals();
+  assert.equal(JSON.stringify(reviewScopesRequest()), JSON.stringify({ action: "scopes" }));
+  assert.equal(JSON.stringify(reviewEndAllRequest()), JSON.stringify({ action: "end", all: true }));
+  const end = reviewEndRequest([
+    { sessionId: "s1", kind: "compare", base: "b1", head: "h1", repoPath: "/repo", reviewed: 2, total: 5, extra: 1 },
+    null,
+  ]);
+  assert.equal(JSON.stringify(end), JSON.stringify({ action: "end", scopes: [{ sessionId: "s1", kind: "compare", base: "b1", head: "h1" }] }));
+  assert.deepEqual(plain(reviewEndRequest(null)), { action: "end", scopes: [] });
+
+  assert.equal(reviewScopeLabel({ kind: "commit", base: "abcdef123", head: "abcdef123" }), "abcdef1");
+  assert.equal(reviewScopeLabel({ kind: "compare", base: "aaaaaaaaaa", head: "bbbbbbbbbb" }), "aaaaaaa..bbbbbbb");
+  assert.equal(reviewScopeLabel({ kind: "commit", base: "", head: "" }), "");
+
+  const normalized = normalizeReviewScopes({
+    scopes: [
+      { sessionId: "s1", repoPath: "/repo/a", kind: "commit", base: "aaaaaaa1", head: "aaaaaaa1", reviewed: 2, total: 5, updatedAt: 1 },
+      { sessionId: "s1", repoPath: "/repo/b", kind: "compare", base: "bbbbbbb1", head: "bbbbbbb2", reviewed: 1, total: null },
+      { sessionId: "s2", repoPath: "/repo/a", kind: "compare", base: "c", head: "d", reviewed: 0, total: 0 },
+      null,
+    ],
+  });
+  assert.equal(normalized.count, 3);
+  assert.deepEqual(Array.from(normalized.groups, (group) => group.repoPath), ["/repo/a", "/repo/b"]);
+  assert.equal(normalized.groups[0].items.length, 2);
+  assert.equal(normalized.groups[1].items[0].total, null);
+  assert.equal(normalized.items[1].kind, "compare");
+  assert.deepEqual(plain(normalizeReviewScopes(null)), { items: [], groups: [], count: 0 });
+});
+
+test("ReviewManagerPanel groups scopes and gates end-all behind a confirmation", () => {
+  const { ReviewManagerPanel } = loadInternals();
+  const scopesValue = {
+    scopes: [
+      { sessionId: "s1", repoPath: "/repo/a", kind: "commit", base: "aaaaaaa1", head: "aaaaaaa1", reviewed: 2, total: 5 },
+      { sessionId: "s1", repoPath: "/repo/a", kind: "compare", base: "bbbbbbb1", head: "bbbbbbb2", reviewed: 1, total: null },
+      { sessionId: "s2", repoPath: "/repo/b", kind: "commit", base: "ccccccc1", head: "ccccccc1", reviewed: 0, total: 0 },
+    ],
+  };
+  const ended = [];
+  const counts = { prompted: 0, cancelled: 0, endedAll: 0, refreshed: 0 };
+  const render = (confirmingAll) => collectElements(ReviewManagerPanel({
+    t: tParams,
+    state: { status: "ready", value: scopesValue, error: "" },
+    confirmingAll,
+    onClose() {},
+    onRefresh: () => { counts.refreshed += 1; },
+    onPromptEndAll: () => { counts.prompted += 1; },
+    onCancelEndAll: () => { counts.cancelled += 1; },
+    onEndAll: () => { counts.endedAll += 1; },
+    onEndScope: (scope) => ended.push(scope),
+  }));
+  const tree = render(false);
+  const rows = tree.filter((element) => String(element.props.className || "").includes("dgg-scope-row"));
+  assert.equal(rows.length, 3);
+  assert.ok(tree.some((element) => element.children.join("") === "review.managerTitle"));
+  assert.ok(tree.some((element) => element.children.join("") === "/repo/a"), "scopes are grouped by repository");
+  assert.ok(tree.some((element) => String(element.children.join("")).includes("review.progress(reviewed=2,total=5)")));
+  const endButtons = tree.filter((element) => element.type === "button" && element.children.join("") === "review.end");
+  assert.equal(endButtons.length, 3);
+  endButtons[0].props.onClick();
+  assert.equal(ended.length, 1);
+  assert.equal(ended[0].kind, "commit");
+  tree.find((element) => element.type === "button" && element.children.join("") === "review.endAll").props.onClick();
+  assert.equal(counts.prompted, 1);
+  const confirming = render(true);
+  assert.ok(confirming.some((element) => element.children.join("") === "review.endAllConfirm"));
+  confirming.find((element) => element.type === "button" && element.children.join("") === "review.endAll").props.onClick();
+  assert.equal(counts.endedAll, 1);
+  confirming.find((element) => element.type === "button" && element.children.join("") === "action.cancel").props.onClick();
+  assert.equal(counts.cancelled, 1);
+
+  const empty = collectElements(ReviewManagerPanel({ t: tParams, state: { status: "ready", value: { scopes: [] }, error: "" } }));
+  assert.ok(empty.some((element) => element.children.join("") === "review.noScopes"));
+  const unavailable = collectElements(ReviewManagerPanel({ t: tParams, state: { status: "unavailable", value: null, error: "" } }));
+  assert.ok(unavailable.some((element) => element.children.join("") === "review.unavailable"));
+  let retried = 0;
+  const failed = collectElements(ReviewManagerPanel({ t: tParams, state: { status: "error", value: null, error: "boom" }, onRefresh: () => { retried += 1; } }));
+  assert.match(failed.find((element) => element.props.role === "alert").children.join(""), /review\.failed: boom/);
+  failed.find((element) => element.type === "button" && element.children.join("") === "state.retry").props.onClick();
+  assert.equal(retried, 1);
+  const unknownRepo = collectElements(ReviewManagerPanel({ t: tParams, state: { status: "ready", value: { scopes: [{ sessionId: "s", kind: "commit", base: "a", head: "a", reviewed: 1, total: 2 }] }, error: "" } }));
+  assert.ok(unknownRepo.some((element) => element.children.join("") === "review.unknownRepo"));
+});
+
+test("repository-config request bodies, values and conflict labels", () => {
+  const { repoConfigRequest, repoConfigValueOf, conflictLabel } = loadInternals();
+  assert.equal(JSON.stringify(repoConfigRequest({ sessionId: "s1", action: "status" })), JSON.stringify({ sessionId: "s1", action: "status" }));
+  assert.equal(JSON.stringify(repoConfigRequest({ sessionId: "s1", action: "export" })), JSON.stringify({ sessionId: "s1", action: "export" }));
+  assert.equal(JSON.stringify(repoConfigRequest({ sessionId: "s1", action: "import" })), JSON.stringify({ sessionId: "s1", action: "import" }));
+  assert.equal(JSON.stringify(repoConfigRequest({ sessionId: "s1", action: "clear" })), JSON.stringify({ sessionId: "s1", action: "clear" }));
+  assert.equal(JSON.stringify(repoConfigRequest({ sessionId: "s1", action: "clear", path: "/repo" })), JSON.stringify({ sessionId: "s1", action: "clear", path: "/repo" }));
+  assert.equal(repoConfigRequest({ sessionId: "s1", action: "bogus" }).action, "status", "unknown actions fall back to status");
+
+  const value = repoConfigValueOf({
+    isRepo: true,
+    present: true,
+    valid: false,
+    path: "/repo/.gitgraph.json",
+    keys: ["a", "b", ""],
+    error: "bad file",
+    overrides: { a: 1 },
+    unknown: ["x", ""],
+    invalid: [{ key: "k", reason: "r" }, "s", null],
+    applied: 2,
+    bytes: 10,
+  });
+  assert.equal(value.present, true);
+  assert.equal(value.valid, false);
+  assert.equal(value.path, "/repo/.gitgraph.json");
+  assert.deepEqual(Array.from(value.keys), ["a", "b"]);
+  assert.deepEqual(Array.from(value.unknown), ["x"]);
+  assert.equal(value.invalid.length, 2);
+  assert.equal(value.applied, 2);
+  assert.equal(value.bytes, 10);
+  assert.equal(value.keyCount, 2);
+  const numericKeys = repoConfigValueOf({ keys: 7, applied: 3 });
+  assert.deepEqual(Array.from(numericKeys.keys), []);
+  assert.equal(numericKeys.keyCount, 7, "an export count is accepted as the key count");
+  assert.equal(numericKeys.applied, 3);
+  assert.deepEqual(plain(repoConfigValueOf(null)), {
+    isRepo: true, present: false, valid: true, path: "", keys: [], keyCount: 0, unknown: [], invalid: [], applied: 0, error: "", overrides: {}, bytes: null,
+  });
+  assert.equal(conflictLabel({ key: "k", reason: "r" }), "k: r");
+  assert.equal(conflictLabel({ setting: "k", message: "m" }), "k: m");
+  assert.equal(conflictLabel("plain"), "plain");
+  assert.equal(conflictLabel({}), "{}");
+});
+
+test("RepoConfigPanel renders status, export/import conflicts and the clear confirmation", () => {
+  const { RepoConfigPanel } = loadInternals();
+  const actions = [];
+  const render = (state, confirmingClear) => collectElements(RepoConfigPanel({
+    t: tParams,
+    state,
+    confirmingClear,
+    onClose() {},
+    onRefresh() {},
+    onAction: (action) => actions.push(action),
+    onPromptClear() {},
+    onCancelClear() {},
+    onClear: () => actions.push("clear"),
+  }));
+  const textOfTree = (elements) => elements.map((element) => element.children.join("")).join(" | ");
+
+  const statusTree = render({ status: "ready", action: "status", value: { isRepo: true, present: true, valid: true, path: "/repo/.gitgraph.json", keys: ["a", "b"], overrides: { a: 1 } }, error: "" }, false);
+  const statusText = textOfTree(statusTree);
+  assert.match(statusText, /repoconfig\.present/);
+  assert.match(statusText, /repoconfig\.pathLabel: \/repo\/\.gitgraph\.json/);
+  assert.match(statusText, /repoconfig\.keys\(count=2\)/);
+  statusTree.find((element) => element.type === "button" && element.children.join("") === "repoconfig.export").props.onClick();
+  statusTree.find((element) => element.type === "button" && element.children.join("") === "repoconfig.import").props.onClick();
+  statusTree.find((element) => element.type === "button" && element.children.join("") === "repoconfig.clear").props.onClick();
+  assert.deepEqual(actions, ["export", "import"]);
+
+  const absent = textOfTree(render({ status: "ready", action: "status", value: { isRepo: true, present: false, valid: true, path: "", keys: [] }, error: "" }, false));
+  assert.match(absent, /repoconfig\.absent/);
+
+  const exported = textOfTree(render({ status: "ready", action: "export", value: { isRepo: true, present: true, valid: true, path: "/repo/.gitgraph.json", keys: ["a"], bytes: 10 }, error: "" }, false));
+  assert.match(exported, /repoconfig\.exported\(path=\/repo\/\.gitgraph\.json,count=1\)/);
+
+  const importTree = render({
+    status: "ready",
+    action: "import",
+    value: { isRepo: true, applied: 2, keys: ["a", "b"], unknown: ["x", "y"], invalid: [{ key: "k", reason: "r" }] },
+    error: "",
+  }, false);
+  const importText = textOfTree(importTree);
+  assert.match(importText, /repoconfig\.imported\(applied=2\)/);
+  assert.match(importText, /repoconfig\.unknown\(count=2\) — x, y/);
+  assert.match(importText, /repoconfig\.invalid\(count=1\) — k: r/);
+  assert.ok(importTree.some((element) => String(element.props.className || "").includes("dgg-repoconfig-conflict")));
+
+  const confirming = render({ status: "ready", action: "status", value: { isRepo: true, present: true, valid: true, path: "p", keys: [] }, error: "" }, true);
+  assert.ok(confirming.some((element) => element.children.join("") === "repoconfig.clearConfirm"));
+  confirming.find((element) => element.type === "button" && element.children.join("") === "repoconfig.clear").props.onClick();
+  assert.equal(actions.at(-1), "clear");
+  const promptOnly = render({ status: "ready", action: "status", value: { isRepo: true, present: true, valid: true, path: "p", keys: [] }, error: "" }, false);
+  assert.equal(promptOnly.some((element) => element.children.join("") === "repoconfig.clearConfirm"), false);
+
+  const failed = render({ status: "error", action: "status", value: null, error: "boom" }, false);
+  assert.match(failed.find((element) => element.props.role === "alert").children.join(""), /repoconfig\.failed: boom/);
+  const loading = render({ status: "loading", action: "status", value: null, error: "" }, false);
+  assert.ok(loading.some((element) => String(element.props.className || "").includes("dgg-inline-status")));
+});
+
+test("PR, review-management and repo-config wiring drives the routes and refresh", () => {
+  assert.match(SOURCE, /postJson\("pr", prRequest\(\{ sessionId, path: selectedRepo \}\), controller\.signal\)/);
+  assert.match(SOURCE, /postJson\("review", reviewScopesRequest\(\), controller\.signal\)/);
+  assert.match(SOURCE, /postJson\("review", reviewEndRequest\(\[scope\]\)\)/);
+  assert.match(SOURCE, /postJson\("review", reviewEndAllRequest\(\)\)/);
+  assert.match(SOURCE, /postJson\("repoconfig", repoConfigRequest\(\{ sessionId, action: chosen, path: selectedRepo \}\), controller\.signal\)/);
+  assert.match(SOURCE, /if \(chosen === "import"\) refresh\(\);/);
+  assert.match(SOURCE, /onOpen: \(url\) => openExternalUrl\(url\)/);
+  assert.match(SOURCE, /t\("menu\.pr"\)/);
+  assert.match(SOURCE, /t\("menu\.reviewManager"\)/);
+  assert.match(SOURCE, /t\("menu\.repoConfig"\)/);
+  assert.match(SOURCE, /disabled: running === true \|\| hasRemotes !== true/);
+  assert.match(SOURCE, /h\(PullRequestDialog, \{/);
+  assert.match(SOURCE, /h\(ReviewManagerPanel, \{/);
+  assert.match(SOURCE, /h\(RepoConfigPanel, \{/);
+
+  // The toolbar menu reflects the remote availability.
+  const { Toolbar } = loadInternals();
+  const props = {
+    t: (key) => key, menuOpen: true, columns: {}, order: "date", findOpen: false, filterOpen: false,
+    onRefresh() {}, onToggleFind() {}, onToggleFilter() {}, onOrderChange() {}, onToggleColumn() {},
+    onToggleMenu() {}, onCloseMenu() {}, onFetch() {}, onOpenRemotes() {}, onBack() {},
+    onOpenPr() {}, onOpenReviewManager() {}, onOpenRepoConfig() {},
+  };
+  const withoutRemote = collectElements(Toolbar({ ...props, hasRemotes: false }));
+  const prItem = withoutRemote.find((element) => element.type === "button" && element.children.join("") === "menu.pr");
+  assert.equal(prItem.props.disabled, true);
+  assert.equal(prItem.props.title, "pr.noRemote");
+  const withRemote = collectElements(Toolbar({ ...props, hasRemotes: true }));
+  const enabledPr = withRemote.find((element) => element.type === "button" && element.children.join("") === "menu.pr");
+  assert.equal(enabledPr.props.disabled, false);
+  assert.ok(withRemote.some((element) => element.type === "button" && element.children.join("") === "menu.reviewManager"));
+  assert.ok(withRemote.some((element) => element.type === "button" && element.children.join("") === "menu.repoConfig"));
 });
