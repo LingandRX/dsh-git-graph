@@ -3139,7 +3139,7 @@ test("CommitRow renders the five table cells and honours hidden columns", () => 
   // The chips live inline before the subject.
   const chips = collectElements(desc).find((element) => String(element.props.className || "").includes("dgg-chips-inline"));
   assert.ok(chips);
-  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*min-width:0/);
+  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*min-width:110px/);
   assert.match(SOURCE, /\.dgg-cell-text\{[^}]*text-overflow:ellipsis/);
 });
 
@@ -5036,6 +5036,19 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.equal(writeStoredColumnWidths(storage, { date: 120, author: 150, commit: 90 }), true);
   assert.deepEqual(plain(readStoredColumnWidths(storage)), { date: 120, author: 150, commit: 90 });
   assert.deepEqual(JSON.parse(storage.data.get(COLUMN_WIDTH_STORAGE_KEY)), { date: 120, author: 150, commit: 90 });
+});
+
+test("narrow panes shrink the data columns before squeezing the description", () => {
+  // The three data columns are flexible with readable floors...
+  assert.match(SOURCE, /\.dgg-cell-date\{[^}]*flex:0 1 var\(--dgg-col-date, 140px\)[^}]*min-width:44px/);
+  assert.match(SOURCE, /\.dgg-cell-author\{[^}]*flex:0 1 var\(--dgg-col-author, 112px\)[^}]*min-width:56px/);
+  assert.match(SOURCE, /\.dgg-cell-commit\{[^}]*flex:0 1 var\(--dgg-col-commit, 76px\)[^}]*min-width:56px/);
+  // ...and the description has a zero basis plus a floor, so it grows into spare
+  // space, shrinks only after those columns, and never collapses below the floor
+  // (graph + description stay visible when the sidebar is narrow).
+  assert.match(SOURCE, /\.dgg-cell-desc\{[^}]*flex:1 1 0[^}]*min-width:110px/);
+  // The graph column stays fixed, so the description floor always has room.
+  assert.match(SOURCE, /\.dgg-cell-graph\{[^}]*flex:0 0 var\(--dgg-graph-w/);
 });
 
 test("column header renders draggable handles and the list applies CSS variables", () => {
