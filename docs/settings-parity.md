@@ -26,22 +26,23 @@ not appear in this table.
 
 | Wiring | Entries | Canonical | Aliases |
 | --- | ---: | ---: | ---: |
-| `mapped` | 71 | 48 | 23 |
+| `mapped` | 74 | 50 | 24 |
 | `vscode-only` | 10 | 8 | 2 |
-| `out-of-scope` | 29 | 25 | 4 |
+| `out-of-scope` | 26 | 23 | 3 |
 | **total** | **110** | **81** | **29** |
 
-Catalog: 110 entries = 81 canonical settings + 29 aliases, split **mapped 71** / **vscode-only 10** / **out-of-scope 29**.
+Catalog: 110 entries = 81 canonical settings + 29 aliases, split **mapped 74** / **vscode-only 10** / **out-of-scope 26**.
 
 `aliasOf` marks the 29 legacy flat spellings upstream still declares: their value folds into
 the canonical key and the canonical key wins when both are set and differ.
 
 ## Presentation payload
 
-`PRESENTATION_KEYS` holds **29** keys: the 26 contract §4 keys in their original order, then
-`initialLoad` (300), `loadMore` (100) and `loadMoreAutomatically` (true) appended for the
-client pagination consumer. `presentation.initialLoad` / `presentation.loadMore` are clamped to
-**1–2000**; out-of-range or fractional values are clamped and reported in `invalid`.
+`PRESENTATION_KEYS` holds **30** keys: the 26 contract §4 keys in their original order, then
+`initialLoad` (300), `loadMore` (100) and `loadMoreAutomatically` (true) for the client pagination
+consumer, and `avatars` (false) last for the wave-9 client avatar rendering. `presentation.initialLoad` /
+`presentation.loadMore` are clamped to **1–2000**; out-of-range or fractional values are clamped and
+reported in `invalid`.
 
 ## Audit
 
@@ -52,9 +53,11 @@ Every `mapped` row was re-audited against the final code: the host consumers liv
 `dialogDefaultsFor`, `layoutRefChips`, `paginationOf`/`shouldAutoLoad`, `shortcutFor`,
 `visibleMenuItems`, `orderedRepositories`). The only former `mapped` key demoted in this audit is
 `fileEncoding`: the value is still forwarded as `presentation.fileEncoding`, but no host or client
-code reads it, so it is now `out-of-scope`. Legacy aliases inherit the wiring and consumer of
-their canonical key. `test/settings.test.js` pins the invariant that no mapped note defers to a
-future wave, and that this document's count table matches the module.
+code reads it, so it is now `out-of-scope`. Wave 9 later mapped two former non-goals for real:
+`repository.commits.fetchAvatars` (host Gravatar URLs + `presentation.avatars` client rendering) and
+`customPullRequestProviders` (host `POST /pr` URL substitution + client PR dialog). Legacy aliases
+inherit the wiring and consumer of their canonical key. `test/settings.test.js` pins the invariant
+that no mapped note defers to a future wave, and that this document's count table matches the module.
 
 ## Key table
 
@@ -67,7 +70,7 @@ future wave, and that this document's count table matches the module.
 | `contextMenuActionsVisibility` | `object` | `{}` | `mapped` | presentation.contextMenuVisibility -> context-menu filter (visibleMenuItems); groups are flattened to action ids, so one false hides that action across menus |
 | `customBranchGlobPatterns` | `array` | `[]` | `mapped` | presentation.customBranchGlobPatterns -> branch-filter glob prefill (globPrefillText) |
 | `customEmojiShortcodeMappings` | `array` | `[]` | `mapped` | presentation.emojiMappings -> emojiTable merged into richTextParts |
-| `customPullRequestProviders` | `array` | `[]` | `out-of-scope` | non-goal: PR provider integrations (parity.md section 5) |
+| `customPullRequestProviders` | `array` | `[]` | `mapped` | lib/git.js readPullRequest substitutes $1..$8 in each custom {name, templateUrl} provider; the client PR dialog lists the returned URLs (POST /pr) |
 | `date.format` | `string` | `"Date & Time"` | `mapped` | presentation.dateFormat -> formatCommitDate (commit row and detail dates) |
 | `date.type` | `string` | `"Author Date"` | `mapped` | presentation.dateType -> author vs committer date in the commit row and detail |
 | `defaultColumnVisibility` | `object` | `{"Date":true,"Author":true,"Commit":true}` | `mapped` | presentation.columnVisibility -> initial column toggles (columnsOf) |
@@ -111,7 +114,7 @@ future wave, and that this document's count table matches the module.
 | `openToTheRepoOfTheActiveTextEditorDocument` | `boolean` | `false` | `vscode-only` | depends on the VS Code active text editor/document |
 | `referenceLabels.alignment` | `string` | `"Normal"` | `mapped` | presentation.referenceLabelAlignment -> layoutRefChips alignment |
 | `referenceLabels.combineLocalAndRemoteBranchLabels` | `boolean` | `true` | `mapped` | presentation.combineLocalAndRemoteBranchLabels -> combineLocalAndRemoteChips in layoutRefChips |
-| `repository.commits.fetchAvatars` | `boolean` | `false` | `out-of-scope` | non-goal: avatars (parity.md section 5) |
+| `repository.commits.fetchAvatars` | `boolean` | `false` | `mapped` | lib/git.js readGraph/readCommit add authorAvatar/committerAvatar Gravatar URLs when true (default false: no network unless enabled); presentation.avatars switches client avatar rendering (initials fallback) |
 | `repository.commits.initialLoad` | `number` | `300` | `mapped` | default graph page size (300) when the request omits `limit`; still capped; presentation.initialLoad seeds the client's first request (paginationOf) |
 | `repository.commits.loadMore` | `number` | `100` | `mapped` | presentation.loadMore -> client pagination step (requestMoreCommits) |
 | `repository.commits.loadMoreAutomatically` | `boolean` | `true` | `mapped` | presentation.loadMoreAutomatically -> shouldAutoLoad load-more-on-scroll |
@@ -150,7 +153,7 @@ future wave, and that this document's count table matches the module.
 | `dateType` | `string` | `"Author Date"` | `aliasOf` → `date.type` | Legacy alias of date.type; wired through date.type |
 | `defaultFileViewType` | `string` | `"File Tree"` | `aliasOf` → `commitDetailsView.fileView.type` | Legacy alias of commitDetailsView.fileView.type; wired through commitDetailsView.fileView.type |
 | `fetchAndPrune` | `boolean` | `false` | `aliasOf` → `repository.fetchAndPrune` | Legacy alias of repository.fetchAndPrune; wired through repository.fetchAndPrune |
-| `fetchAvatars` | `boolean` | `false` | `aliasOf` → `repository.commits.fetchAvatars` | Legacy alias of repository.commits.fetchAvatars; folds into it — non-goal: avatars (parity.md section 5) |
+| `fetchAvatars` | `boolean` | `false` | `aliasOf` → `repository.commits.fetchAvatars` | Legacy alias of repository.commits.fetchAvatars; wired through repository.commits.fetchAvatars |
 | `graphColours` | `array` | `["#0085d9","#d9008f","#00d90a","#d98500","#a300d9","#ff0000","#00d9cc","#e138e8","#85d900","#dc5b23","#6f24d6","#ffcc00"]` | `aliasOf` → `graph.colours` | Legacy alias of graph.colours; wired through graph.colours |
 | `graphStyle` | `string` | `"rounded"` | `aliasOf` → `graph.style` | Legacy alias of graph.style; wired through graph.style |
 | `includeCommitsMentionedByReflogs` | `boolean` | `false` | `aliasOf` → `repository.includeCommitsMentionedByReflogs` | Legacy alias of repository.includeCommitsMentionedByReflogs; wired through repository.includeCommitsMentionedByReflogs |
@@ -173,7 +176,7 @@ future wave, and that this document's count table matches the module.
 
 ## How this is verified
 
-`test/settings.test.js` (node:test) imports `lib/settings.js` directly and runs with `node --test` (plus `node --check lib/settings.js` for the syntax gate). It asserts: exactly 110 unique keys and the 110-row table above; the 81 canonical / 29 alias split with every `aliasOf` target existing and being canonical; the 71 mapped / 10 vscode-only / 29 out-of-scope split with a non-empty one-line note on every non-mapped entry; folding of all 29 aliases and canonical-wins precedence when both are set and differ; that the wave-8-B host-wired keys are mapped and their notes describe the current behaviour; that every mapped note names a concrete consumer and none defers to a future wave or admits having no consumer (and that this document's count table matches the module exactly); number/boolean/array/object coercion and the `invalid`/`unknown` reports; a presentation payload containing exactly the 29 keys (the 26 contract §4 keys plus the three appended pagination keys) in order that survives `JSON.stringify` and is request-independent; the 1–2000 pagination clamp; and `parseShortcut` for all four `keyboardShortcut.*` keys (CTRL/CMD/ALT/SHIFT and function keys) including the default fallback for unparsable descriptors. The suite also feeds `normalizeSettings` non-objects, throwing proxies and throwing getters to prove it never throws.
+`test/settings.test.js` (node:test) imports `lib/settings.js` directly and runs with `node --test` (plus `node --check lib/settings.js` for the syntax gate). It asserts: exactly 110 unique keys and the 110-row table above; the 81 canonical / 29 alias split with every `aliasOf` target existing and being canonical; the 74 mapped / 10 vscode-only / 26 out-of-scope split with a non-empty one-line note on every non-mapped entry; folding of all 29 aliases and canonical-wins precedence when both are set and differ; that the wave-8-B host-wired keys are mapped and their notes describe the current behaviour; that every mapped note names a concrete consumer and none defers to a future wave or admits having no consumer (and that this document's count table matches the module exactly); number/boolean/array/object coercion and the `invalid`/`unknown` reports; a presentation payload containing exactly the 30 keys (the 26 contract §4 keys, the three pagination keys and `avatars`) in order that survives `JSON.stringify` and is request-independent; the 1–2000 pagination clamp; and `parseShortcut` for all four `keyboardShortcut.*` keys (CTRL/CMD/ALT/SHIFT and function keys) including the default fallback for unparsable descriptors. The suite also feeds `normalizeSettings` non-objects, throwing proxies and throwing getters to prove it never throws.
 
 ## User-visible defaults changed by the host wiring
 
@@ -188,6 +191,11 @@ future wave, and that this document's count table matches the module.
 - `repository.showUntrackedFiles: false` makes `/uncommitted` pass `--untracked-files=no`.
 - `repository.commits.order` supplies the default ordering for requests without `order`;
   `onlyFollowFirstParent` and `includeCommitsMentionedByReflogs` change the default walk.
+- Avatars stay off by default: `repository.commits.fetchAvatars: true` is an explicit opt-in that
+  makes the host add Gravatar URLs to `/graph` rows and `/commit` (network only when enabled); the
+  client then renders them with an initials fallback.
+- `customPullRequestProviders` feeds the `POST /pr` route: each `{name, templateUrl}` gets `$1..$8`
+  substituted and the resulting URLs are listed by the client PR dialog.
 
 ## Classification notes
 

@@ -85,6 +85,8 @@ const CONTRACT_PRESENTATION_KEYS = [
   "initialLoad",
   "loadMore",
   "loadMoreAutomatically",
+  /* Appended for the wave-9 client avatar rendering. */
+  "avatars",
 ];
 
 /** Upstream v1.30.0 `graph.colours` default. */
@@ -152,6 +154,7 @@ const DEFAULT_PRESENTATION = {
   initialLoad: 300,
   loadMore: 100,
   loadMoreAutomatically: true,
+  avatars: false,
 };
 
 /** True when `value` matches a declared upstream setting type. */
@@ -242,16 +245,16 @@ test("canonical keys are the 81 entries without aliasOf", () => {
   assert.equal(CANONICAL_KEYS.length + 29, SETTINGS.length);
 });
 
-test("wiring counts match the parity report: 71 mapped / 10 vscode-only / 29 out-of-scope", () => {
+test("wiring counts match the parity report: 74 mapped / 10 vscode-only / 26 out-of-scope", () => {
   const counts = { mapped: 0, "vscode-only": 0, "out-of-scope": 0 };
   for (const setting of SETTINGS) counts[setting.wiring] += 1;
-  assert.deepEqual(counts, { mapped: 71, "vscode-only": 10, "out-of-scope": 29 });
+  assert.deepEqual(counts, { mapped: 74, "vscode-only": 10, "out-of-scope": 26 });
 
   const canonicalCounts = { mapped: 0, "vscode-only": 0, "out-of-scope": 0 };
   for (const setting of SETTINGS) {
     if (setting.aliasOf === undefined) canonicalCounts[setting.wiring] += 1;
   }
-  assert.deepEqual(canonicalCounts, { mapped: 48, "vscode-only": 8, "out-of-scope": 25 });
+  assert.deepEqual(canonicalCounts, { mapped: 50, "vscode-only": 8, "out-of-scope": 23 });
 });
 
 test("the wave-8-B host-wired keys are mapped and describe what happens now", () => {
@@ -404,6 +407,53 @@ test("pagination presentation values are clamped to 1-2000 and reported", () => 
   const automatic = normalizeSettings({ "repository.commits.loadMoreAutomatically": "false" });
   assert.equal(automatic.values["repository.commits.loadMoreAutomatically"], false);
   assert.equal(automatic.presentation.loadMoreAutomatically, false);
+});
+
+test("presentation.avatars follows repository.commits.fetchAvatars (default off)", () => {
+  assert.equal(PRESENTATION_KEYS.length, 30);
+  assert.equal(PRESENTATION_KEYS.at(-1), "avatars");
+  assert.equal(normalizeSettings({}).presentation.avatars, false);
+
+  const enabled = normalizeSettings({ "repository.commits.fetchAvatars": true });
+  assert.equal(enabled.values["repository.commits.fetchAvatars"], true);
+  assert.equal(enabled.presentation.avatars, true);
+
+  const foldedAlias = normalizeSettings({ fetchAvatars: true });
+  assert.equal(foldedAlias.values["repository.commits.fetchAvatars"], true);
+  assert.equal(foldedAlias.presentation.avatars, true);
+  assert.deepEqual(foldedAlias.aliased, [{ key: "fetchAvatars", canonical: "repository.commits.fetchAvatars", discarded: false }]);
+
+  const canonicalWins = normalizeSettings({ fetchAvatars: true, "repository.commits.fetchAvatars": false });
+  assert.equal(canonicalWins.presentation.avatars, false);
+  assert.ok(invalidHas(canonicalWins, "fetchAvatars", /canonical key/));
+
+  const invalid = normalizeSettings({ "repository.commits.fetchAvatars": "yes" });
+  assert.equal(invalid.presentation.avatars, false);
+  assert.ok(invalidHas(invalid, "repository.commits.fetchAvatars", /expected boolean/));
+});
+
+test("wave-9 former non-goals are mapped with their concrete consumers", () => {
+  const byKey = new Map(SETTINGS.map((setting) => [setting.key, setting]));
+
+  const avatars = byKey.get("repository.commits.fetchAvatars");
+  assert.equal(avatars.wiring, "mapped");
+  assert.equal(avatars.default, false, "avatar fetching stays opt-in (privacy)");
+  assert.match(avatars.note, /readGraph\/readCommit/);
+  assert.match(avatars.note, /authorAvatar/);
+  assert.match(avatars.note, /presentation\.avatars/);
+  assert.match(avatars.note, /initials fallback/);
+
+  const avatarsAlias = byKey.get("fetchAvatars");
+  assert.equal(avatarsAlias.aliasOf, "repository.commits.fetchAvatars");
+  assert.equal(avatarsAlias.wiring, "mapped");
+  assert.match(avatarsAlias.note, /wired through repository\.commits\.fetchAvatars/);
+
+  const providers = byKey.get("customPullRequestProviders");
+  assert.equal(providers.wiring, "mapped");
+  assert.match(providers.note, /readPullRequest/);
+  assert.match(providers.note, /templateUrl/);
+  assert.match(providers.note, /POST \/pr/);
+  assert.match(providers.note, /client PR dialog/);
 });
 
 test("wave-8-B walk/fetch settings normalize into values for the host", () => {
