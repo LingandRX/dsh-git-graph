@@ -208,6 +208,20 @@ const CONTRACT_KEYS = [
   "action.pushToMultipleRemotes",
   "action.branch",
   "action.remotes",
+  "menu.compareWorking",
+  "uncommitted.compareWorking",
+  "mute.mergeCommit",
+  "mute.nonAncestor",
+  "file.status.A",
+  "file.status.M",
+  "file.status.D",
+  "file.status.R",
+  "file.status.C",
+  "file.status.T",
+  "file.status.U",
+  "file.status.other",
+  "compare.workingTitle",
+  "compare.workingTree",
   "common.refresh",
   "common.close",
 ];
@@ -296,9 +310,10 @@ function instrument(exports) {
 /**
  * Load the module with the internal pure helpers and the presentational
  * `RefChips` component attached.
+ * @param fetchImpl - optional fetch stub used by request-path tests.
  * @returns the internal helpers and views the tests exercise directly.
  */
-function loadInternals() {
+function loadInternals(fetchImpl) {
   const { exported } = loadModule(
     instrument(
       "__test: { layoutGraph, classifyRefs, groupFiles, lanePath, RefChips, actionDialogSpec, actionArguments, isUnmergedRefusal, " +
@@ -313,8 +328,20 @@ function loadInternals() {
         "fileRowKey, RichText, SignatureBadge, CommitTooltip, RepoLabel, repoOptions, withRepoPath, " +
         "reviewKey, reviewRequest, reviewStateOf, toggleReviewFile, unreviewedPaths, isUnavailableError, " +
         "ReviewBar, ReviewCheckbox, FileRow, CompareView, Toolbar, rowMetaParts, buildFileTree, " +
-        "nextIndex, neighbourHash, stashHashesIn, multiRemotePushItem, FileTree, FileViewToggle, DEFAULT_COLUMNS }",
+        "nextIndex, neighbourHash, stashHashesIn, multiRemotePushItem, FileTree, FileViewToggle, DEFAULT_COLUMNS, " +
+        "findModeOf, searchRequest, normalizeSearchCommit, normalizeSearchValue, searchStateFrom, appendSearchPage, " +
+        "loadSearchPage, createDebouncer, compileGlob, compileGlobList, parseGlobInput, branchFilterUnion, " +
+        "globPrefillText, SearchResults, FIND_SCOPE_PAGE, FIND_SCOPE_ALL, SEARCH_LIMIT, SEARCH_DEBOUNCE_MS, EMPTY_SEARCH, " +
+        "branchFilterState, branchRequestKey, NO_MATCH_BRANCH_KEY, NoGlobMatchState, matchShortcut, shortcutsOf, " +
+        "normalizeShortcut, DEFAULT_SHORTCUTS, UNASSIGNED_SHORTCUT, parentHash, childHash, detailArrowHash, " +
+        "registerGlobalShortcutPanel, activeGlobalShortcutPanel, dispatchGlobalShortcut, installGlobalShortcutListener, " +
+        "absoluteTime, relativeTime, formatCommitDate, columnsOf, fileViewOf, compactFoldersOf, autoCenterDetailsOf, " +
+        "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
+        "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
+        "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf }",
     ),
+    fetchImpl,
   );
   assert.ok(exported !== null && typeof exported.__test === "object" && exported.__test !== null);
   return exported.__test;
@@ -1557,7 +1584,7 @@ test("BranchFilterBar renders checkbox options and the all reset", () => {
   const all = collectElements(
     BranchFilterBar({ t: (key) => key, options, selection: null, onToggle: (name) => toggled.push(name), onReset: () => resets.push(true), onClose: () => { closed += 1; } }),
   );
-  const boxes = all.filter((element) => element.type === "input");
+  const boxes = all.filter((element) => element.type === "input" && element.props.type === "checkbox");
   assert.equal(boxes.length, 2);
   assert.deepEqual(boxes.map((box) => box.props.checked), [true, true], "default is every branch");
   boxes[1].props.onChange();
@@ -1571,7 +1598,7 @@ test("BranchFilterBar renders checkbox options and the all reset", () => {
   assert.ok(all.some((element) => element.children.join("") === "filter.current"), "the HEAD branch is badged");
 
   const subset = collectElements(BranchFilterBar({ t: (key) => key, options, selection: ["dev"], onToggle() {}, onReset() {}, onClose() {} }));
-  assert.deepEqual(subset.filter((element) => element.type === "input").map((box) => box.props.checked), [false, true]);
+  assert.deepEqual(subset.filter((element) => element.type === "input" && element.props.type === "checkbox").map((box) => box.props.checked), [false, true]);
 
   const empty = collectElements(BranchFilterBar({ t: (key) => key, options: [], selection: null, onToggle() {}, onReset() {}, onClose() {} }));
   assert.ok(empty.some((element) => element.children.join("") === "filter.empty"));
@@ -1698,11 +1725,11 @@ test("commitActionItems adds merge, rebase, drop and reset with drop guardrails"
     { hash: "h1", parents: [] },
   ];
   const items = commitActionItems({ hash: "h2", parents: ["h1"] }, { headHash: "h3", commits });
-  assert.deepEqual(Array.from(items, (item) => item.id), ["merge", "rebase", "drop-commit", "reset-commit"]);
-  assert.deepEqual(Array.from(items, (item) => item.kind), ["merge", "rebase", "dropCommit", "resetToCommit"]);
-  assert.deepEqual(Array.from(items, (item) => item.labelKey), ["action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit"]);
-  assert.equal(items[0].after, "create-branch");
-  assert.equal(items[3].after, "drop-commit");
+  assert.deepEqual(Array.from(items, (item) => item.id), ["compare-working", "merge", "rebase", "drop-commit", "reset-commit"]);
+  assert.deepEqual(Array.from(items, (item) => item.kind), ["compareWorking", "merge", "rebase", "dropCommit", "resetToCommit"]);
+  assert.deepEqual(Array.from(items, (item) => item.labelKey), ["menu.compareWorking", "action.merge", "action.rebase", "action.dropCommit", "action.resetToCommit"]);
+  assert.equal(items[1].after, "create-branch");
+  assert.equal(items[4].after, "drop-commit");
   // h2 still has h3 as a child, so dropping it would rewrite reachable history.
   const drop = items.find((item) => item.kind === "dropCommit");
   assert.equal(drop.disabled, true);
@@ -2174,7 +2201,35 @@ test("DetailView offers merge, rebase, drop and reset and disables drop with a r
 // ── wave 5: presentation, rich text, signatures ─────────────────────────────
 
 test("presentationOf normalizes the graph presentation settings", () => {
-  const { presentationOf } = loadInternals();
+  const { presentationOf, DEFAULT_SHORTCUTS } = loadInternals();
+  const defaultShortcuts = {
+    find: { ...DEFAULT_SHORTCUTS.find },
+    refresh: { ...DEFAULT_SHORTCUTS.refresh },
+    scrollToHead: { ...DEFAULT_SHORTCUTS.scrollToHead },
+    scrollToStash: { ...DEFAULT_SHORTCUTS.scrollToStash },
+    stashPrevious: { ...DEFAULT_SHORTCUTS.scrollToStash, shift: true },
+  };
+  const waveC = {
+    dateType: "Author Date",
+    dateFormat: "",
+    columnVisibility: { Date: true, Author: true, Commit: true },
+    fileViewType: "",
+    compactFolders: true,
+    autoCenterDetails: false,
+    referenceLabelAlignment: "Normal",
+    combineLocalAndRemoteBranchLabels: false,
+    muteMergeCommits: false,
+    muteNonAncestors: false,
+    emojiMappings: {},
+    markdown: false,
+    enhancedAccessibility: false,
+    repositoryDropdownOrder: "",
+    initialLoad: 0,
+    loadMore: 0,
+    loadMoreAutomatically: false,
+    dialogDefaults: {},
+    contextMenuVisibility: {},
+  };
   const defaults = presentationOf(null);
   assert.deepEqual(plain(defaults), {
     graphStyle: "rounded",
@@ -2182,6 +2237,10 @@ test("presentationOf normalizes the graph presentation settings", () => {
     showSignature: false,
     showEmoji: true,
     issueUrlTemplate: "",
+    customBranchGlobPatterns: [],
+    shortcuts: defaultShortcuts,
+    globalShortcuts: false,
+    ...waveC,
   });
   const configured = presentationOf({
     presentation: {
@@ -2191,6 +2250,39 @@ test("presentationOf normalizes the graph presentation settings", () => {
       showEmoji: false,
       issueUrlTemplate: "https://example.com/issues/{id}",
       useMailmap: true,
+      customBranchGlobPatterns: [{ name: "feature", glob: "feature/*" }, "", 5, "release/**"],
+      dateType: "Commit Date",
+      dateFormat: "ISO Date Only",
+      columnVisibility: { Date: false, Author: true, Commit: false },
+      fileViewType: "File Tree",
+      compactFolders: false,
+      autoCenterDetails: true,
+      referenceLabelAlignment: "Branches (aligned to the graph) & Tags (on the right)",
+      combineLocalAndRemoteBranchLabels: true,
+      muteMergeCommits: true,
+      muteNonAncestors: true,
+      emojiMappings: [
+        { shortcode: "party", emoji: "🎉" },
+        { shortcode: "smile", emoji: "X" },
+        { shortcode: "", emoji: "ignored" },
+        { shortcode: "bad", emoji: 7 },
+      ],
+      markdown: true,
+      enhancedAccessibility: true,
+      repositoryDropdownOrder: "Name",
+      initialLoad: 500,
+      loadMore: 250,
+      loadMoreAutomatically: true,
+      dialogDefaults: {
+        applyStash: { reinstateIndex: true },
+        popStash: { reinstateIndex: true },
+        merge: { noCommit: true, noFastForward: true, squashCommits: true },
+        pullBranch: { noFastForward: true },
+        resetCurrentBranchToCommit: { mode: "Hard" },
+        resetUncommittedChanges: { mode: "Mixed" },
+        stashUncommittedChanges: { includeUntracked: true },
+      },
+      contextMenuVisibility: { commit: { cherryPick: false }, branch: { deleteBranch: true } },
     },
   });
   assert.deepEqual(plain(configured), {
@@ -2199,6 +2291,36 @@ test("presentationOf normalizes the graph presentation settings", () => {
     showSignature: true,
     showEmoji: false,
     issueUrlTemplate: "https://example.com/issues/{id}",
+    customBranchGlobPatterns: ["feature/*", "release/**"],
+    shortcuts: defaultShortcuts,
+    globalShortcuts: false,
+    markdown: true,
+    enhancedAccessibility: true,
+    repositoryDropdownOrder: "Name",
+    initialLoad: 500,
+    loadMore: 250,
+    loadMoreAutomatically: true,
+    dialogDefaults: {
+      applyStash: { reinstateIndex: true },
+      popStash: { reinstateIndex: true },
+      merge: { noCommit: true, noFastForward: true, squashCommits: true },
+      pullBranch: { noFastForward: true },
+      resetCurrentBranchToCommit: { mode: "hard" },
+      resetUncommittedChanges: { mode: "mixed" },
+      stashUncommittedChanges: { includeUntracked: true },
+    },
+    contextMenuVisibility: { commit: { cherryPick: false }, branch: { deleteBranch: true } },
+    dateType: "Commit Date",
+    dateFormat: "ISO Date Only",
+    columnVisibility: { Date: false, Author: true, Commit: false },
+    fileViewType: "tree",
+    compactFolders: false,
+    autoCenterDetails: true,
+    referenceLabelAlignment: "Branches (aligned to the graph) & Tags (on the right)",
+    combineLocalAndRemoteBranchLabels: true,
+    muteMergeCommits: true,
+    muteNonAncestors: true,
+    emojiMappings: { party: "🎉", smile: "X" },
   });
   // An unknown style falls back, and a template without {id} is disabled.
   const fallback = presentationOf({ presentation: { graphStyle: "bogus", issueUrlTemplate: "https://example.com/issues/" } });
@@ -3009,4 +3131,1638 @@ test("ActionDialog renders a remote checkbox per remote and submits the picks pl
   });
   const emptyRun = collectElements(empty).find((element) => element.type === "button" && element.children.join("") === "action.run");
   assert.equal(emptyRun.props.disabled, true);
+});
+
+// ── wave 8: full-history search ─────────────────────────────────────────────
+
+test("in-page find mode filters locally and never requests the search route", () => {
+  const calls = [];
+  const { findModeOf, filterCommits, FIND_SCOPE_PAGE, FIND_SCOPE_ALL, graphRequest } = loadInternals((url) => {
+    calls.push(String(url));
+    throw new Error("in-page find must not fetch");
+  });
+  const commits = [{ hash: "aaaa1111", abbrev: "aaaa111", subject: "Fix crash", authorName: "Alice", refs: ["main"] }];
+  assert.equal(findModeOf(FIND_SCOPE_PAGE, "fix"), "page", "the default scope keeps in-page matching");
+  assert.equal(findModeOf(undefined, "fix"), "page");
+  assert.deepEqual(Array.from(filterCommits(commits, "fix").indices), [0]);
+  assert.deepEqual(calls, [], "in-page matching performs no fetch");
+  assert.equal(findModeOf(FIND_SCOPE_ALL, ""), "idle");
+  assert.equal(findModeOf(FIND_SCOPE_ALL, "   "), "idle");
+  assert.equal(findModeOf(FIND_SCOPE_ALL, "  fix  "), "search");
+  // The graph request is untouched by the new scope.
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "s", limit: 120 })), JSON.stringify({ sessionId: "s", limit: 120 }));
+});
+
+test("searchRequest builds the exact contract body and only adds a path when selected", () => {
+  const { searchRequest, SEARCH_LIMIT } = loadInternals();
+  assert.equal(SEARCH_LIMIT, 50);
+  const body = JSON.stringify(searchRequest({ sessionId: "session-1", query: "  fix bug  ", offset: 0 }));
+  assert.equal(body, JSON.stringify({ query: "fix bug", scope: "all", limit: 50, offset: 0, sessionId: "session-1" }));
+  assert.deepEqual(plain(searchRequest({ sessionId: "s", query: "x", offset: 50 })), {
+    query: "x",
+    scope: "all",
+    limit: 50,
+    offset: 50,
+    sessionId: "s",
+  });
+  assert.equal("path" in searchRequest({ sessionId: "s", query: "x" }), false, "no path key without a repository override");
+  assert.equal(plain(searchRequest({ sessionId: "s", query: "x", path: "/repo" })).path, "/repo");
+  assert.equal(plain(searchRequest({ sessionId: "s", query: "x", offset: -9 })).offset, 0, "negative offsets clamp to 0");
+});
+
+test("loadSearchPage posts the search body and normalizes the contract commit shape", async () => {
+  const calls = [];
+  const response = {
+    isRepo: true,
+    query: "fix",
+    scope: "all",
+    commits: [
+      {
+        hash: "abc1234def5678901234567890123456789012",
+        parents: ["p1"],
+        author: { name: "Alice", email: "alice@x", date: 1700000000 },
+        committer: { name: "Carol", email: "carol@x", date: "2023-11-14T22:13:20Z" },
+        subject: "Fix crash",
+        refs: [
+          { type: "branch", name: "refs/heads/main" },
+          { type: "tag", name: "v1.0" },
+          { type: "remote", name: "origin/main" },
+        ],
+      },
+    ],
+    offset: 0,
+    limit: 50,
+    hasMore: true,
+    scanned: 20000,
+    capped: true,
+  };
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return { status: 200, json: async () => ({ ok: true, value: response }) };
+  };
+  const { loadSearchPage } = loadInternals(fetchImpl);
+  const page = await loadSearchPage({ sessionId: "session-1", query: "  fix  ", offset: 0 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "api/dsh-git-graph/search");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers["content-type"], "application/json");
+  assert.equal(calls[0].init.body, JSON.stringify({ query: "fix", scope: "all", limit: 50, offset: 0, sessionId: "session-1" }));
+  assert.deepEqual(plain(page.commits[0]), {
+    hash: "abc1234def5678901234567890123456789012",
+    abbrev: "abc1234",
+    parents: ["p1"],
+    authorName: "Alice",
+    authorEmail: "alice@x",
+    authorTime: 1700000000,
+    committerName: "Carol",
+    committerEmail: "carol@x",
+    committerTime: 1700000000,
+    subject: "Fix crash",
+    refs: ["main", "tag: v1.0", "origin/main"],
+  });
+  assert.equal(page.hasMore, true);
+  assert.equal(page.capped, true);
+  assert.equal(page.scanned, 20000);
+  assert.equal(page.nextOffset, 1);
+
+  // A selected repository travels as a path member after sessionId.
+  await loadSearchPage({ sessionId: "s", query: "fix", path: "/repo" });
+  assert.equal(calls[1].init.body, JSON.stringify({ query: "fix", scope: "all", limit: 50, offset: 0, sessionId: "s", path: "/repo" }));
+});
+
+test("loadSearchPage rejects with the host error envelope", async () => {
+  const fetchImpl = async () => ({
+    status: 200,
+    json: async () => ({ ok: false, error: { code: "BAD_REQUEST", message: "query is required" } }),
+  });
+  const { loadSearchPage } = loadInternals(fetchImpl);
+  await assert.rejects(
+    () => loadSearchPage({ sessionId: "s", query: "" }),
+    (error) => error.message === "query is required" && error.code === "BAD_REQUEST",
+  );
+});
+
+test("SEARCH_DEBOUNCE_MS waits at least 250 ms and collapses rapid input", () => {
+  const { createDebouncer, SEARCH_DEBOUNCE_MS } = loadInternals();
+  assert.ok(SEARCH_DEBOUNCE_MS >= 250, "the contract requires a debounce of at least 250 ms");
+  const clock = (() => {
+    let nextId = 1;
+    const timers = new Map();
+    return {
+      setTimeout(callback, delay) {
+        const id = nextId;
+        nextId += 1;
+        timers.set(id, { callback, delay });
+        return id;
+      },
+      clearTimeout(id) {
+        timers.delete(id);
+      },
+      runAll() {
+        const pending = Array.from(timers.values());
+        timers.clear();
+        for (const timer of pending) timer.callback();
+      },
+      delays() {
+        return Array.from(timers.values(), (timer) => timer.delay);
+      },
+    };
+  })();
+  const debouncer = createDebouncer(SEARCH_DEBOUNCE_MS, clock);
+  const calls = [];
+  debouncer.schedule(() => calls.push("first"));
+  debouncer.schedule(() => calls.push("second"));
+  assert.deepEqual(calls, [], "nothing fires before the debounce elapses");
+  assert.deepEqual(clock.delays(), [SEARCH_DEBOUNCE_MS], "the superseded timer is cleared");
+  assert.equal(debouncer.pending(), true);
+  clock.runAll();
+  assert.deepEqual(calls, ["second"], "only the trailing input fires");
+  assert.equal(debouncer.pending(), false);
+  debouncer.schedule(() => calls.push("third"));
+  debouncer.cancel();
+  clock.runAll();
+  assert.deepEqual(calls, ["second"], "cancel drops the pending callback");
+  assert.equal(debouncer.delay(), SEARCH_DEBOUNCE_MS);
+});
+
+test("search pagination appends pages, dedupes and follows the response offset", () => {
+  const { searchStateFrom, appendSearchPage } = loadInternals();
+  const commit = (hash) => ({
+    hash,
+    parents: [],
+    author: { name: "A", email: "a@x", date: 1 },
+    committer: { name: "A", email: "a@x", date: 1 },
+    subject: hash,
+    refs: [],
+  });
+  const first = searchStateFrom({
+    isRepo: true,
+    commits: [commit("c1"), commit("c2")],
+    offset: 0,
+    limit: 50,
+    hasMore: true,
+    scanned: 100,
+    capped: false,
+  });
+  assert.equal(first.status, "ready");
+  assert.equal(first.count, 2);
+  assert.equal(first.nextOffset, 2);
+  assert.equal(first.loadingMore, false);
+  assert.deepEqual(Array.from(first.commits, (entry) => entry.hash), ["c1", "c2"]);
+
+  const second = appendSearchPage(first, {
+    isRepo: true,
+    commits: [commit("c2"), commit("c3"), commit("c4")],
+    offset: 2,
+    limit: 50,
+    hasMore: false,
+    scanned: 200,
+    capped: true,
+  });
+  assert.deepEqual(Array.from(second.commits, (entry) => entry.hash), ["c1", "c2", "c3", "c4"], "overlapping rows are dropped");
+  assert.equal(second.count, 4);
+  assert.equal(second.nextOffset, 5);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.capped, true);
+
+  const third = appendSearchPage(second, { commits: [], offset: 5, limit: 50, hasMore: true, capped: false, scanned: 0 });
+  assert.equal(third.count, 4);
+  assert.equal(third.capped, true, "the scan-limit notice stays visible across pages");
+  assert.equal(third.hasMore, true);
+});
+
+test("FindBar toggles the scope and keeps the in-page counter and navigation", () => {
+  const { FindBar, FIND_SCOPE_PAGE, FIND_SCOPE_ALL } = loadInternals();
+  const scopes = [];
+  const page = collectElements(
+    FindBar({
+      t: (key) => key,
+      scope: FIND_SCOPE_PAGE,
+      query: "abc",
+      total: 3,
+      activeIndex: 1,
+      onQuery() {},
+      onScope: (scope) => scopes.push(scope),
+      onNext() {},
+      onPrev() {},
+      onClose() {},
+    }),
+  );
+  const radios = page.filter((element) => element.type === "input" && element.props.type === "radio");
+  assert.equal(radios.length, 2);
+  assert.deepEqual(radios.map((radio) => radio.props.checked), [true, false]);
+  radios[1].props.onChange();
+  assert.deepEqual(scopes, [FIND_SCOPE_ALL]);
+  assert.ok(page.some((element) => element.props.className === "dgg-find-count"), "in-page counter stays");
+  assert.deepEqual(
+    page.filter((element) => element.type === "button").map((button) => button.props["aria-label"]),
+    ["find.prev", "find.next", "find.close"],
+    "in-page navigation stays",
+  );
+
+  const all = collectElements(
+    FindBar({
+      t: (key) => key,
+      scope: FIND_SCOPE_ALL,
+      query: "abc",
+      total: 3,
+      activeIndex: 1,
+      onQuery() {},
+      onScope() {},
+      onNext() {},
+      onPrev() {},
+      onClose() {},
+    }),
+  );
+  assert.deepEqual(
+    all.filter((element) => element.type === "input" && element.props.type === "radio").map((radio) => radio.props.checked),
+    [false, true],
+  );
+  assert.equal(all.some((element) => element.props.className === "dgg-find-count"), false, "full-history mode has no in-page counter");
+  assert.deepEqual(all.filter((element) => element.type === "button").map((button) => button.props["aria-label"]), ["find.close"]);
+});
+
+test("SearchResults renders the count, capped notice, rows, load more and errors", () => {
+  const { records } = applied();
+  const zh = records.locales[0].dictionaries.zh;
+  const t = (key, params) => {
+    let text = typeof zh[key] === "string" ? zh[key] : key;
+    for (const [name, value] of Object.entries(params ?? {})) text = text.split("{" + name + "}").join(String(value));
+    return text;
+  };
+  const { SearchResults } = loadInternals();
+  const commits = [
+    { hash: "h1", abbrev: "h1", subject: "One", parents: [] },
+    { hash: "h2", abbrev: "h2", subject: "Two", parents: ["h1"] },
+  ];
+  let loaded = 0;
+  let retried = 0;
+  const search = {
+    status: "ready",
+    error: "",
+    commits,
+    count: 2,
+    hasMore: true,
+    capped: true,
+    loadingMore: false,
+  };
+  const tree = SearchResults({
+    t,
+    search,
+    refIndex: new Map(),
+    selectedHash: "",
+    onSelect() {},
+    onMenu() {},
+    onRefMenu() {},
+    onLoadMore: () => {
+      loaded += 1;
+    },
+    onRetry: () => {
+      retried += 1;
+    },
+  });
+  const elements = collectElements(tree);
+  const text = elements.map((element) => element.children.join("")).join(" | ");
+  assert.match(text, /共 2 个结果/, "result count");
+  assert.ok(elements.some((element) => element.children.join("") === "仅扫描最近 20000 个提交"), "capped notice");
+  const list = elements.find((element) => typeof element.type === "function" && element.type.name === "CommitList");
+  assert.ok(list, "results render through the existing commit list");
+  assert.equal(list.props.value.commits.length, 2);
+  assert.equal(list.props.canLoadMore, true, "hasMore enables the shared load-more footer");
+  const listElements = collectElements(list.type(list.props));
+  const more = listElements.find((element) => element.type === "button" && element.children.join("") === zh["toolbar.loadMore"]);
+  assert.ok(more, "the load-more control is the shared 加载更多 button");
+  more.props.onClick();
+  assert.equal(loaded, 1);
+  assert.equal(retried, 0);
+
+  const uncapped = collectElements(SearchResults({ t, search: { ...search, capped: false }, onLoadMore() {}, onRetry() {} }));
+  assert.equal(uncapped.some((element) => element.children.join("") === "仅扫描最近 20000 个提交"), false);
+
+  const failed = collectElements(
+    SearchResults({
+      t,
+      search: { status: "error", error: "fatal: bad revision", commits: [], count: 0, hasMore: false, capped: false, loadingMore: false },
+      onRetry: () => {
+        retried += 1;
+      },
+    }),
+  );
+  const alert = failed.find((element) => element.props.role === "alert");
+  assert.equal(alert.children.join(""), "全量搜索失败: fatal: bad revision", "inline error message");
+  const retry = failed.find((element) => element.type === "button" && element.children.join("") === zh["state.retry"]);
+  retry.props.onClick();
+  assert.equal(retried, 1);
+
+  const loading = collectElements(
+    SearchResults({
+      t,
+      search: { status: "loading", commits: [], count: 0, hasMore: false, capped: false, loadingMore: false },
+      onLoadMore() {},
+      onRetry() {},
+    }),
+  );
+  assert.ok(loading.some((element) => element.children.join("") === "正在搜索全部历史…"));
+});
+
+// ── wave 8: custom branch glob patterns ─────────────────────────────────────
+
+test("compileGlob supports the documented glob grammar", () => {
+  const { compileGlob } = loadInternals();
+  const cases = [
+    ["*", "main", true],
+    ["*", "origin/main", false],
+    ["feature/*", "feature/x", true],
+    ["feature/*", "feature/x/y", false],
+    ["feature/**", "feature/x/y", true],
+    ["feature/**", "feature/", true],
+    ["?", "a", true],
+    ["?", "ab", false],
+    ["?", "/", false],
+    ["[abc]*", "bug", true],
+    ["[abc]*", "dev", false],
+    ["[!abc]*", "dev", true],
+    ["[!abc]*", "bug", false],
+    ["release-[0-9]", "release-1", true],
+    ["release-[0-9]", "release-x", false],
+    ["!feature/*", "main", true],
+    ["!feature/*", "feature/x", false],
+    ["**/main", "origin/main", true],
+    ["main", "main", true],
+    ["main", "main2", false],
+    ["v1.0", "v1.0", true],
+    ["v1.0", "v1x0", false],
+  ];
+  for (const [pattern, subject, expected] of cases) {
+    const matcher = compileGlob(pattern);
+    assert.equal(matcher.ok, true, "pattern should compile: " + pattern);
+    assert.equal(matcher.test(subject), expected, pattern + " vs " + subject);
+  }
+  assert.equal(compileGlob("!feature/*").negated, true);
+  assert.equal(compileGlob("feature/*").negated, false);
+});
+
+test("invalid glob patterns are rejected inline and never applied", () => {
+  const { compileGlob, parseGlobInput, branchFilterUnion, branchFilterOptions, BranchFilterBar } = loadInternals();
+  assert.deepEqual(plain(compileGlob("[abc")), { ok: false, errorKey: "filter.globInvalid" });
+  assert.deepEqual(plain(compileGlob("")), { ok: false, errorKey: "filter.globEmpty" });
+  assert.deepEqual(plain(compileGlob("   ")), { ok: false, errorKey: "filter.globEmpty" });
+  assert.deepEqual(plain(compileGlob("!")), { ok: false, errorKey: "filter.globEmpty" });
+
+  const parsed = parseGlobInput("feature/*, [abc");
+  assert.equal(parsed.errorKey, "filter.globInvalid", "the first invalid pattern is reported");
+  assert.deepEqual(Array.from(parsed.patterns), ["feature/*", "[abc"]);
+  assert.equal(parsed.matchers.length, 1, "only valid patterns are compiled");
+
+  const options = branchFilterOptions([
+    { name: "refs/heads/main", shortName: "main", type: "branch" },
+    { name: "refs/heads/dev", shortName: "dev", type: "branch" },
+  ]);
+  assert.deepEqual(Array.from(branchFilterUnion(["main"], ["[abc"], options)), ["main"], "invalid patterns never change the selection");
+
+  const changed = [];
+  const elements = collectElements(
+    BranchFilterBar({
+      t: (key) => key,
+      options,
+      selection: null,
+      globText: "feature/*, [abc",
+      globError: parsed.errorKey,
+      onGlob: (value) => changed.push(value),
+      onToggle() {},
+      onReset() {},
+      onClose() {},
+    }),
+  );
+  const input = elements.find((element) => element.type === "input" && element.props.type === "text");
+  assert.ok(input, "the glob input is rendered");
+  assert.equal(input.props.value, "feature/*, [abc");
+  assert.equal(input.props.placeholder, "filter.globPlaceholder");
+  input.props.onChange({ target: { value: "feature/*" } });
+  assert.deepEqual(changed, ["feature/*"]);
+  const error = elements.find((element) => String(element.props.className || "").includes("dgg-glob-error"));
+  assert.equal(error.children.join(""), "filter.globInvalid", "the inline message is localized");
+  assert.equal(error.props.role, "alert");
+});
+
+test("branch globs follow the documented filter semantics", () => {
+  const {
+    branchFilterOptions,
+    branchFilterState,
+    branchFilterUnion,
+    branchRequestValue,
+    branchRequestKey,
+    NO_MATCH_BRANCH_KEY,
+  } = loadInternals();
+  const options = branchFilterOptions([
+    { name: "refs/heads/main", shortName: "main", type: "branch", head: true },
+    { name: "refs/heads/dev", shortName: "dev", type: "branch" },
+    { name: "refs/heads/feature/a", shortName: "feature/a", type: "branch" },
+    { name: "refs/heads/feature/b", shortName: "feature/b", type: "branch" },
+    { name: "refs/heads/release/1", shortName: "release/1", type: "branch" },
+  ]);
+  const allNames = Array.from(options, (option) => option.name);
+  const stateOf = (selection, patterns) => {
+    const state = branchFilterState(selection, patterns, options);
+    return { union: Array.from(state.union), noMatch: state.noMatch };
+  };
+  const requestOf = (selection, patterns) => branchRequestValue(branchFilterState(selection, patterns, options).union, options);
+
+  // 1. No valid glob: exactly the previous behavior (null = every branch).
+  assert.deepEqual(stateOf(null, []), { union: allNames, noMatch: false });
+  assert.equal(requestOf(null, []), null);
+  assert.deepEqual(Array.from(requestOf(["main", "dev"], [])), ["main", "dev"]);
+  assert.deepEqual(Array.from(branchFilterUnion(["main", "dev"], [], options)), ["main", "dev"]);
+  assert.deepEqual(Array.from(branchFilterUnion(["main", "dev"], null, options)), ["main", "dev"]);
+  // An invalid pattern is not a valid glob: the request stays unchanged.
+  assert.deepEqual(stateOf(null, ["[abc"]), { union: allNames, noMatch: false });
+  assert.equal(requestOf(null, ["[abc"]), null);
+  assert.deepEqual(Array.from(requestOf(["main"], ["[abc"])), ["main"]);
+
+  // 2. Valid glob + implicit “all”: only the glob-matched branches remain.
+  assert.deepEqual(stateOf(null, ["feature/*"]), { union: ["feature/a", "feature/b"], noMatch: false });
+  assert.deepEqual(Array.from(requestOf(null, ["feature/*"])), ["feature/a", "feature/b"], "glob + all filters, it does not union with every branch");
+  assert.equal(requestOf(null, ["feature/*"]).includes("main"), false);
+
+  // (b) A negated glob + implicit “all”: everything except the matching branches.
+  assert.deepEqual(stateOf(null, ["!feature/*"]), { union: ["main", "dev", "release/1"], noMatch: false });
+  assert.deepEqual(Array.from(requestOf(null, ["!feature/*"])), ["main", "dev", "release/1"]);
+
+  // 3. Valid glob + explicit selection: union = selected ∪ glob-matched.
+  assert.deepEqual(stateOf(["main"], ["feature/*", "release/?"]), {
+    union: ["main", "feature/a", "feature/b", "release/1"],
+    noMatch: false,
+  });
+  assert.deepEqual(Array.from(requestOf(["main"], ["feature/*", "release/?"])), ["main", "feature/a", "feature/b", "release/1"]);
+  // An explicit empty selection means “nothing selected”; globs still add matches.
+  assert.deepEqual(stateOf([], ["feature/**"]), { union: ["feature/a", "feature/b"], noMatch: false });
+
+  // The first graph page has not arrived yet: globs cannot be evaluated, so the
+  // request stays unfiltered and the next render decides.
+  assert.deepEqual(Array.from(branchFilterState(null, ["feature/*"], []).union), []);
+  assert.equal(branchFilterState(null, ["feature/*"], []).noMatch, false);
+
+  // Key semantics: "" = all branches, names = filtered, sentinel = suppressed.
+  assert.equal(branchRequestKey(null, false), "");
+  assert.equal(branchRequestKey(["main"], false), "main");
+  assert.equal(branchRequestKey(null, true), NO_MATCH_BRANCH_KEY);
+  assert.notEqual(NO_MATCH_BRANCH_KEY, "");
+});
+
+test("a zero-match glob suppresses the request and shows a localized empty state", () => {
+  const {
+    branchFilterOptions,
+    branchFilterState,
+    branchRequestValue,
+    branchRequestKey,
+    NO_MATCH_BRANCH_KEY,
+    NoGlobMatchState,
+  } = loadInternals();
+  const options = branchFilterOptions([
+    { name: "refs/heads/main", shortName: "main", type: "branch", head: true },
+    { name: "refs/heads/dev", shortName: "dev", type: "branch" },
+  ]);
+  const state = branchFilterState(null, ["hotfix/*"], options);
+  assert.equal(state.noMatch, true);
+  assert.deepEqual(Array.from(state.union), []);
+  // Without the guard the request value would be null, i.e. “every branch”.
+  assert.equal(branchRequestValue(state.union, options), null);
+  // …so the effect key carries the sentinel instead of the all-branches key.
+  assert.equal(branchRequestKey(branchRequestValue(state.union, options), state.noMatch), NO_MATCH_BRANCH_KEY);
+  // The graph effect skips the request when that sentinel is the dependency key.
+  assert.match(SOURCE, /if \(branchKey === NO_MATCH_BRANCH_KEY\) return undefined;/, "the graph effect must not fetch on noMatch");
+
+  // A subset selection is still honoured: selected ∪ (glob matches = none).
+  const subset = branchFilterState(["main"], ["hotfix/*"], options);
+  assert.equal(subset.noMatch, false);
+  assert.deepEqual(Array.from(subset.union), ["main"]);
+
+  // The empty state is localized (zh + en both present, zh text is the contract's).
+  const { records } = applied();
+  const { zh, en } = records.locales[0].dictionaries;
+  assert.equal(zh["filter.noGlobMatch"], "没有分支匹配该 glob");
+  assert.ok(typeof en["filter.noGlobMatch"] === "string" && en["filter.noGlobMatch"].trim() !== "");
+  assert.ok(typeof zh["filter.noGlobMatchHint"] === "string" && zh["filter.noGlobMatchHint"].trim() !== "");
+  assert.ok(typeof en["filter.noGlobMatchHint"] === "string" && en["filter.noGlobMatchHint"].trim() !== "");
+  const t = (key) => zh[key] ?? key;
+  const elements = collectElements(NoGlobMatchState({ t }));
+  assert.ok(elements.some((element) => element.children.join("") === "没有分支匹配该 glob"));
+  assert.ok(elements.some((element) => element.children.join("") === zh["filter.noGlobMatchHint"]));
+});
+
+test("no glob keeps the graph request byte-identical and invalid globs keep the previous request", () => {
+  const { branchFilterOptions, branchFilterState, branchRequestValue, graphRequest } = loadInternals();
+  const options = branchFilterOptions([
+    { name: "refs/heads/main", shortName: "main", type: "branch", head: true },
+    { name: "refs/heads/dev", shortName: "dev", type: "branch" },
+  ]);
+  const requestFor = (selection, patterns) => {
+    const state = branchFilterState(selection, patterns, options);
+    const branches = branchRequestValue(state.union, options);
+    return graphRequest({ sessionId: "session-1", limit: 120, branches });
+  };
+  const today = JSON.stringify({ sessionId: "session-1", limit: 120 });
+  assert.equal(JSON.stringify(requestFor(null, [])), today);
+  assert.equal(JSON.stringify(requestFor(null, null)), today);
+  assert.equal(JSON.stringify(requestFor(["main", "dev"], [])), today, "a full selection stays unfiltered");
+  // An invalid glob is never applied: same body as the matching no-glob case.
+  assert.equal(JSON.stringify(requestFor(null, ["[abc"])), JSON.stringify(requestFor(null, [])));
+  assert.equal(JSON.stringify(requestFor(["main"], ["[abc"])), JSON.stringify(requestFor(["main"], [])));
+  assert.equal(JSON.stringify(requestFor(["main"], ["[abc"])), JSON.stringify({ sessionId: "session-1", limit: 120, branches: ["main"] }));
+});
+
+test("globPrefillText reads customBranchGlobPatterns once and drops invalid entries", () => {
+  const { globPrefillText, presentationOf } = loadInternals();
+  assert.equal(globPrefillText(null), "");
+  assert.equal(globPrefillText({}), "");
+  assert.equal(
+    globPrefillText({ customBranchGlobPatterns: [" feature/* ", "release/**", 7, "", "[bad"] }),
+    "feature/*, release/**",
+    "invalid patterns are not pre-filled",
+  );
+  // The host sends objects `[{ name, glob }]`; both shapes are accepted.
+  assert.equal(
+    globPrefillText({ customBranchGlobPatterns: [{ name: "feature", glob: "feature/*" }, { name: "release", glob: " release/** " }, { name: "bad", glob: "[abc" }, null] }),
+    "feature/*, release/**",
+    "object patterns use their glob; invalid globs are still dropped",
+  );
+  assert.deepEqual(
+    Array.from(presentationOf({ presentation: { customBranchGlobPatterns: ["feature/*", "", 5] } }).customBranchGlobPatterns),
+    ["feature/*"],
+  );
+});
+
+// ── wave 8-B: working-tree comparison ──────────────────────────────────────
+
+test("compareRequest builds the working-tree comparison body exactly", () => {
+  const { compareRequest } = loadInternals();
+  const working = compareRequest({ sessionId: "s1", base: "b1", working: true });
+  assert.deepEqual(plain(working), { sessionId: "s1", base: "b1", working: true });
+  assert.equal("head" in working, false, "the working form never sends a head");
+  assert.equal("head" in compareRequest({ sessionId: "s1", base: "b1", working: true, head: "ignored" }), false);
+  assert.deepEqual(plain(compareRequest({ sessionId: "s1", base: "b1", working: true, path: "/repo" })), {
+    sessionId: "s1",
+    base: "b1",
+    working: true,
+    path: "/repo",
+  });
+  // The classic two-commit body is unchanged.
+  assert.deepEqual(plain(compareRequest({ sessionId: "s1", base: "b1", head: "h1" })), { sessionId: "s1", base: "b1", head: "h1" });
+  assert.equal("working" in compareRequest({ sessionId: "s1", base: "b1", head: "h1" }), false);
+});
+
+test("diffRequest and diffCacheKey carry the working scope with the base hash", () => {
+  const { diffRequest, diffCacheKey } = loadInternals();
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", scope: "working", hash: "b1", file: "a.txt", status: "M" })), {
+    sessionId: "s1",
+    scope: "working",
+    file: "a.txt",
+    hash: "b1",
+    status: "M",
+  });
+  assert.deepEqual(plain(diffRequest({ sessionId: "s1", scope: "working", hash: "b1", file: "new.txt", oldPath: "old.txt" })), {
+    sessionId: "s1",
+    scope: "working",
+    file: "new.txt",
+    hash: "b1",
+    oldPath: "old.txt",
+  });
+  assert.equal("base" in diffRequest({ scope: "working", hash: "b1", file: "a.txt" }), false);
+  assert.equal(diffCacheKey({ scope: "working", hash: "b1", file: "a.txt" }), "working|b1|a.txt|");
+  assert.equal(diffCacheKey({ scope: "working", hash: "b1", file: "a.txt", path: "/repo" }), "working|b1|a.txt|@/repo");
+});
+
+test("CompareView renders the working-tree form without a head hash or swap", () => {
+  const { CompareView } = loadInternals();
+  const calls = [];
+  const tree = CompareView({
+    t: (key) => key,
+    pair: { base: "base-short", head: null, working: true },
+    value: {
+      working: true,
+      head: null,
+      base: "basefullhash",
+      baseAbbrev: "baseful",
+      stats: { files: 1, insertions: 2, deletions: 1 },
+      files: [{ status: "M", path: "a.txt", added: 2, removed: 1 }],
+    },
+    status: "ready",
+    error: null,
+    sessionId: "s1",
+    cache: { current: new Map() },
+    onSwap: () => calls.push("swap"),
+    onExit: () => calls.push("exit"),
+    onRetry: () => calls.push("retry"),
+  });
+  const elements = collectElements(tree);
+  const text = elements.map((element) => element.children.join("")).join(" | ");
+  assert.match(text, /compare\.workingTitle/, "the working form has its own title");
+  assert.ok(elements.some((element) => element.children.join("") === "compare.workingTree"), "the right-hand side is labelled 工作区");
+  assert.equal(
+    elements.some((element) => element.type === "button" && element.props["aria-label"] === "compare.swap"),
+    false,
+    "there is nothing to swap in the working form",
+  );
+  assert.ok(elements.some((element) => element.children.join("") === "baseful"), "the commit side keeps its abbrev");
+  const rows = elements.filter((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].props.scope, "working", "file diffs use the working scope");
+  assert.equal(rows[0].props.hash, "basefullhash", "the working diff is keyed by the resolved base commit");
+  assert.equal(rows[0].props.base, undefined);
+  assert.equal(rows[0].props.head, undefined);
+  const exit = elements.find((element) => element.type === "button" && element.children.join("") === "compare.exit");
+  exit.props.onClick();
+  assert.deepEqual(calls, ["exit"]);
+
+  // Error and empty states keep working.
+  const failed = collectElements(CompareView({ t: (key) => key, pair: { base: "b", working: true }, value: null, status: "error", error: "fatal: boom", onRetry() {} }));
+  const errorState = failed.find((element) => typeof element.type === "function" && element.type.name === "ErrorState");
+  assert.equal(errorState.props.message, "fatal: boom");
+  const empty = collectElements(CompareView({ t: (key) => key, pair: { base: "b", working: true }, value: { working: true, files: [], stats: { files: 0, insertions: 0, deletions: 0 } }, status: "ready" }));
+  assert.ok(empty.some((element) => element.children.join("") === "compare.empty"));
+});
+
+test("commitActionItems offers the working-tree comparison next to compare", () => {
+  const { commitActionItems, commitMenuItems, insertMenuItems } = loadInternals();
+  const commit = { hash: "h2", parents: ["h1"] };
+  const items = commitActionItems(commit, { headHash: "h3", commits: [{ hash: "h3", parents: ["h2"] }, { hash: "h2", parents: ["h1"] }] });
+  const compareWorking = items.find((item) => item.kind === "compareWorking");
+  assert.ok(compareWorking, "the working-tree comparison item exists");
+  assert.equal(compareWorking.id, "compare-working");
+  assert.equal(compareWorking.labelKey, "menu.compareWorking");
+  assert.equal(compareWorking.after, "compare");
+  assert.equal(compareWorking.disabled, undefined);
+  const busy = commitActionItems(commit, { busy: true }).find((item) => item.kind === "compareWorking");
+  assert.equal(busy.disabled, true);
+  assert.equal(busy.reasonKey, "menu.busy");
+  const empty = commitActionItems(null, {}).find((item) => item.kind === "compareWorking");
+  assert.equal(empty.disabled, true);
+
+  // It lands directly after the existing “compare” item when that is offered.
+  const base = commitMenuItems(commit, { baseHash: "h3", baseAbbrev: "h3", commits: [{ hash: "h3", parents: ["h2"] }, { hash: "h2", parents: ["h1"] }] });
+  const merged = insertMenuItems(base, items);
+  const ids = merged.map((item) => item.id);
+  assert.equal(ids.indexOf("compare-working"), ids.indexOf("compare") + 1);
+});
+
+test("working-tree comparison wiring reaches /compare and the working diff scope", () => {
+  // The harness does not render GitGraphBody, so the effect wiring is pinned at the
+  // source level; the request bodies themselves are covered by compareRequest /
+  // diffRequest above.
+  assert.match(SOURCE, /if \(item\.kind === "compareWorking"\) \{\s*enterWorkingCompare\(target\.hash\);/);
+  assert.match(SOURCE, /setCompare\(\{ base, head: null, working: true \}\)/);
+  assert.match(SOURCE, /compareRequest\(\{ sessionId, base: compare\.base, head: compare\.head, working, path: selectedRepo \}\)/);
+  assert.match(SOURCE, /scope: working \? "working" : "compare"/);
+  assert.match(SOURCE, /onCompareWorking: headHash === "" \? undefined : \(\) => enterWorkingCompare\(headHash\)/);
+  // The host has no working-tree review form, so the review scope is suppressed
+  // (the reserved key is covered by reviewKey("working", …)).
+  assert.match(SOURCE, /compare\.working === true\s*\n\s*\? null/);
+});
+
+test("UncommittedView offers compare-with-HEAD and disables it without a HEAD", () => {
+  const { UncommittedView } = loadInternals();
+  const value = { staged: [{ status: "M", path: "a.txt" }], unstaged: [], untracked: [] };
+  const common = {
+    t: (key) => key,
+    value,
+    sessionId: "s1",
+    cache: { current: new Map() },
+    dialog: null,
+    dirty: 1,
+    running: false,
+    onStash() {},
+    onStashUntracked() {},
+    onClean() {},
+    onReset() {},
+    onDiscard() {},
+    onCancelDialog() {},
+    onConfirmDialog() {},
+  };
+  let compared = 0;
+  const tree = collectElements(UncommittedView({ ...common, onCompareWorking: () => { compared += 1; } }));
+  const button = tree.find((element) => element.type === "button" && element.children.join("") === "uncommitted.compareWorking");
+  assert.ok(button, "the compare-with-HEAD control is present");
+  assert.equal(button.props.disabled, false);
+  button.props.onClick();
+  assert.equal(compared, 1);
+  const noHead = collectElements(UncommittedView({ ...common, onCompareWorking: undefined }));
+  const disabled = noHead.find((element) => element.type === "button" && element.children.join("") === "uncommitted.compareWorking");
+  assert.equal(disabled.props.disabled, true, "a repository without HEAD cannot compare");
+});
+
+test("reviewKey reserves a distinct working-comparison scope", () => {
+  const { reviewKey } = loadInternals();
+  assert.equal(reviewKey("working", "abc1234", ""), "working|abc1234|abc1234");
+  assert.equal(reviewKey("working", "abc1234", "ignored"), "working|abc1234|ignored");
+  assert.equal(reviewKey("compare", "a", "b"), "compare|a|b");
+  assert.equal(reviewKey("commit", "a", "a"), "commit|a|a");
+  assert.notEqual(reviewKey("working", "a", ""), reviewKey("compare", "a", ""));
+});
+
+// ── wave 8-B: configurable shortcuts ───────────────────────────────────────
+
+test("matchShortcut follows the platform-modifier rules exactly", () => {
+  const { matchShortcut } = loadInternals();
+  const descriptor = (over) => ({ key: "f", ctrl: false, meta: false, alt: false, shift: false, ...over });
+  const event = (over) => ({ key: "f", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...over });
+  const cases = [
+    [descriptor({ ctrl: true, meta: true }), event({ ctrlKey: true }), true, "ctrl+meta accepts Ctrl"],
+    [descriptor({ ctrl: true, meta: true }), event({ metaKey: true }), true, "ctrl+meta accepts Cmd"],
+    [descriptor({ ctrl: true, meta: true }), event({ ctrlKey: true, metaKey: true }), true],
+    [descriptor({ ctrl: true, meta: true }), event({}), false, "ctrl+meta still needs one modifier"],
+    [descriptor({ ctrl: true }), event({ ctrlKey: true }), true],
+    [descriptor({ ctrl: true }), event({ metaKey: true }), false, "ctrl-only on mac must not fire"],
+    [descriptor({ ctrl: true }), event({ ctrlKey: true, metaKey: true }), false, "the other modifier must be released"],
+    [descriptor({ meta: true }), event({ metaKey: true }), true],
+    [descriptor({ meta: true }), event({ ctrlKey: true }), false],
+    [descriptor({ alt: true }), event({ altKey: true }), true],
+    [descriptor({ alt: true }), event({ altKey: true, ctrlKey: true }), false, "undeclared ctrl must be released"],
+    [descriptor({ shift: true }), event({ shiftKey: true }), true],
+    [descriptor({ shift: false }), event({ shiftKey: true }), false, "extra Shift must not match"],
+    [descriptor({ key: "F" }), event({ key: "f" }), true, "key comparison is case-insensitive"],
+    [descriptor({ key: "f" }), event({ key: "g" }), false],
+    [descriptor({ key: "" }), event({}), false, "UNASSIGNED never matches"],
+  ];
+  for (const [shortcut, keyEvent, expected, reason] of cases) {
+    assert.equal(matchShortcut(shortcut, keyEvent), expected, reason || JSON.stringify({ shortcut, keyEvent }));
+  }
+  assert.equal(matchShortcut(null, event({})), false);
+  assert.equal(matchShortcut(descriptor({}), null), false);
+});
+
+test("shortcutsOf resolves presentation shortcuts with per-action fallbacks", () => {
+  const { presentationOf, shortcutsOf, normalizeShortcut, DEFAULT_SHORTCUTS, UNASSIGNED_SHORTCUT } = loadInternals();
+  assert.deepEqual(plain(shortcutsOf(null)), {
+    find: { ...DEFAULT_SHORTCUTS.find },
+    refresh: { ...DEFAULT_SHORTCUTS.refresh },
+    scrollToHead: { ...DEFAULT_SHORTCUTS.scrollToHead },
+    scrollToStash: { ...DEFAULT_SHORTCUTS.scrollToStash },
+    stashPrevious: { ...DEFAULT_SHORTCUTS.scrollToStash, shift: true },
+  });
+  const resolved = shortcutsOf({
+    shortcuts: {
+      find: { key: "g", ctrl: true, meta: false, alt: false, shift: false },
+      refresh: { key: 7 },
+      scrollToHead: { key: "" },
+    },
+  });
+  assert.deepEqual(plain(resolved.find), { key: "g", ctrl: true, meta: false, alt: false, shift: false });
+  assert.deepEqual(plain(resolved.refresh), plain(DEFAULT_SHORTCUTS.refresh), "malformed entries fall back");
+  assert.deepEqual(plain(resolved.scrollToHead), plain(UNASSIGNED_SHORTCUT), "key:\"\" is a deliberate UNASSIGNED");
+  assert.deepEqual(plain(resolved.scrollToStash), plain(DEFAULT_SHORTCUTS.scrollToStash), "missing entries fall back");
+  assert.deepEqual(plain(resolved.stashPrevious), { ...DEFAULT_SHORTCUTS.scrollToStash, shift: true }, "previous-stash derives Shift");
+  assert.equal(resolved.stashPrevious.key, resolved.scrollToStash.key, "remapping scrollToStash remaps the previous-stash shortcut");
+  assert.deepEqual(plain(normalizeShortcut({ key: 5 }, DEFAULT_SHORTCUTS.find)), plain(DEFAULT_SHORTCUTS.find));
+  assert.deepEqual(plain(normalizeShortcut({ key: "" }, DEFAULT_SHORTCUTS.find)), plain(UNASSIGNED_SHORTCUT));
+
+  const presentation = presentationOf({
+    presentation: {
+      shortcuts: { find: { key: "g", ctrl: true, meta: false, alt: false, shift: false } },
+      globalShortcuts: true,
+    },
+  });
+  assert.equal(presentation.shortcuts.find.key, "g");
+  assert.equal(presentation.shortcuts.refresh.key, "r", "unmentioned shortcuts keep the fallback");
+  assert.equal(presentation.globalShortcuts, true);
+  assert.equal(presentationOf({ presentation: {} }).globalShortcuts, false, "global scope defaults off");
+  assert.equal(presentationOf(null).globalShortcuts, false);
+});
+
+test("shortcutFor honours remapped, CMD-only, ALT and UNASSIGNED bindings", () => {
+  const { shortcutFor, shortcutsOf } = loadInternals();
+  const shortcuts = shortcutsOf({
+    shortcuts: {
+      find: { key: "g", ctrl: true },
+      refresh: { key: "r", meta: true },
+      scrollToHead: { key: "y", ctrl: true, shift: true },
+      scrollToStash: { key: "z", ctrl: true, alt: true },
+    },
+  });
+  assert.equal(shortcutFor({ key: "g", ctrlKey: true }, null, shortcuts), "find");
+  assert.equal(shortcutFor({ key: "G", ctrlKey: true }, null, shortcuts), "find", "keys are case-insensitive");
+  assert.equal(shortcutFor({ key: "g", metaKey: true }, null, shortcuts), null, "ctrl-only binding rejects Cmd");
+  assert.equal(shortcutFor({ key: "g", ctrlKey: true, shiftKey: true }, null, shortcuts), null, "extra Shift must not match");
+  assert.equal(shortcutFor({ key: "r", metaKey: true }, null, shortcuts), "refresh", "CMD-only binding works on mac");
+  assert.equal(shortcutFor({ key: "r", ctrlKey: true }, null, shortcuts), null, "CMD-only binding rejects Ctrl");
+  assert.equal(shortcutFor({ key: "y", ctrlKey: true, shiftKey: true }, null, shortcuts), "head");
+  assert.equal(shortcutFor({ key: "y", ctrlKey: true }, null, shortcuts), null);
+  assert.equal(shortcutFor({ key: "z", ctrlKey: true, altKey: true }, null, shortcuts), "stash-next", "ALT combo");
+  assert.equal(shortcutFor({ key: "z", ctrlKey: true, metaKey: true, altKey: true }, null, shortcuts), null, "both platform modifiers are rejected by a ctrl-only binding");
+  assert.equal(shortcutFor({ key: "z", ctrlKey: true, altKey: true, shiftKey: true }, null, shortcuts), "stash-prev", "previous-stash follows the remapped key + Shift");
+
+  // UNASSIGNED removes both stash directions while the other fallbacks stay usable.
+  const noStash = shortcutsOf({ shortcuts: { scrollToStash: { key: "" } } });
+  assert.equal(shortcutFor({ key: "s", ctrlKey: true }, null, noStash), null);
+  assert.equal(shortcutFor({ key: "s", ctrlKey: true, shiftKey: true }, null, noStash), null);
+  assert.equal(shortcutFor({ key: "f", ctrlKey: true }, null, noStash), "find", "missing entries keep the fallback");
+  // The default map stays exactly today's behavior when no shortcuts are provided.
+  assert.equal(shortcutFor({ key: "f", ctrlKey: true }), "find");
+  assert.equal(shortcutFor({ key: "s", metaKey: true, shiftKey: true }), "stash-prev");
+  assert.equal(shortcutFor({ key: "f", ctrlKey: true }, { tagName: "INPUT" }), null, "typing targets stay guarded");
+});
+
+// ── wave 8-B: Ctrl/Cmd + Up/Down parent/child navigation ───────────────────
+
+test("parentHash, childHash and detailArrowHash implement parent/child navigation", () => {
+  const { parentHash, childHash, detailArrowHash } = loadInternals();
+  const merge = { hash: "m", parents: ["p1", "p2"] };
+  assert.equal(parentHash(merge, false), "p1", "Ctrl/Cmd+Down opens the first parent");
+  assert.equal(parentHash(merge, true), "p2", "Shift follows the next parent at a merge");
+  assert.equal(parentHash({ hash: "a", parents: ["p"] }, true), "p");
+  assert.equal(parentHash({ hash: "root", parents: [] }), "");
+  assert.equal(parentHash(null), "");
+  assert.equal(parentHash({ hash: "x", parents: "nope" }), "");
+
+  const commits = [
+    { hash: "direct", parents: ["m"] },
+    { hash: "merged", parents: ["x", "m"] },
+    { hash: "later", parents: ["direct"] },
+  ];
+  assert.equal(childHash(commits, "m", false), "direct", "prefer the first-parent (same branch) child");
+  assert.equal(childHash(commits, "m", true), "merged", "Shift opens the next child in order");
+  assert.equal(childHash(commits, "direct", false), "later");
+  assert.equal(childHash(commits, "nobody"), "");
+  assert.equal(childHash(null, "m"), "");
+  assert.equal(childHash(commits, ""), "");
+
+  const detail = { hash: "m", parents: ["p1", "p2"] };
+  assert.equal(detailArrowHash({ key: "ArrowDown", ctrlKey: true }, detail, commits), "p1");
+  assert.equal(detailArrowHash({ key: "ArrowDown", metaKey: true, shiftKey: true }, detail, commits), "p2");
+  assert.equal(detailArrowHash({ key: "ArrowUp", ctrlKey: true }, detail, commits), "direct", "Ctrl/Cmd+Up opens the first child");
+  assert.equal(detailArrowHash({ key: "ArrowUp", metaKey: true }, detail, commits), "direct");
+  assert.equal(detailArrowHash({ key: "ArrowDown" }, detail, commits), "", "a bare arrow is not parent navigation");
+  assert.equal(detailArrowHash({ key: "ArrowDown", ctrlKey: true, altKey: true }, detail, commits), "");
+  assert.equal(detailArrowHash({ key: "ArrowLeft", ctrlKey: true }, detail, commits), "");
+  assert.equal(detailArrowHash({ key: "ArrowDown", ctrlKey: true }, null, commits), "");
+  assert.equal(detailArrowHash(null, detail, commits), "");
+});
+
+// ── wave 8-B: opt-in global shortcut scope ─────────────────────────────────
+
+/** Minimal document stand-in that records capture-phase listeners. */
+function createFakeDocument() {
+  const listeners = [];
+  return {
+    activeElement: null,
+    listeners,
+    addEventListener(type, listener, capture) {
+      listeners.push({ type, listener, capture });
+    },
+    removeEventListener(type, listener, capture) {
+      const index = listeners.findIndex((entry) => entry.type === type && entry.listener === listener && entry.capture === capture);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+  };
+}
+
+test("global shortcut registry lets only the last mounted panel handle an event", () => {
+  const { registerGlobalShortcutPanel, activeGlobalShortcutPanel, dispatchGlobalShortcut } = loadInternals();
+  const calls = [];
+  const disposeFirst = registerGlobalShortcutPanel((event) => {
+    calls.push("first:" + event.key);
+    return false;
+  });
+  const disposeSecond = registerGlobalShortcutPanel((event) => {
+    calls.push("second:" + event.key);
+    return true;
+  });
+  assert.equal(typeof activeGlobalShortcutPanel().handler, "function");
+  assert.equal(dispatchGlobalShortcut({ key: "x", target: null }), true, "the last panel handles the event");
+  assert.deepEqual(calls, ["second:x"], "only one mounted instance may handle an event");
+  disposeSecond();
+  assert.equal(dispatchGlobalShortcut({ key: "y", target: null }), false, "the next panel becomes active");
+  assert.deepEqual(calls, ["second:x", "first:y"]);
+  disposeFirst();
+  assert.equal(activeGlobalShortcutPanel(), null);
+  assert.equal(dispatchGlobalShortcut({ key: "z", target: null }), false);
+  // Editable targets are ignored without a modifier, allowed with one.
+  const seen = [];
+  const dispose = registerGlobalShortcutPanel((event) => {
+    seen.push(event.key);
+    return true;
+  });
+  assert.equal(dispatchGlobalShortcut({ key: "Escape", target: { tagName: "INPUT" } }), false);
+  assert.equal(dispatchGlobalShortcut({ key: "f", ctrlKey: true, target: { tagName: "INPUT" } }), true);
+  assert.deepEqual(seen, ["f"]);
+  dispose();
+});
+
+test("global shortcut listener is capture-phase, reference counted and cleanly removed", () => {
+  const { installGlobalShortcutListener } = loadInternals();
+  const doc = createFakeDocument();
+  const dispatched = [];
+  const dispatch = (event) => {
+    dispatched.push(event.key);
+    return event.key === "f";
+  };
+  const disposeFirst = installGlobalShortcutListener(doc, dispatch);
+  assert.equal(doc.listeners.length, 1);
+  assert.equal(doc.listeners[0].type, "keydown");
+  assert.equal(doc.listeners[0].capture, true, "the global listener runs in the capture phase");
+  const disposeSecond = installGlobalShortcutListener(doc, dispatch);
+  assert.equal(doc.listeners.length, 1, "the document listener is shared and reference counted");
+
+  const handled = {
+    key: "f",
+    prevented: 0,
+    stopped: 0,
+    preventDefault() { this.prevented += 1; },
+    stopPropagation() { this.stopped += 1; },
+  };
+  doc.listeners[0].listener(handled);
+  assert.equal(handled.prevented, 1, "handled keys preventDefault");
+  assert.equal(handled.stopped, 1, "handled keys stopPropagation");
+  const ignored = {
+    key: "x",
+    prevented: 0,
+    stopped: 0,
+    preventDefault() { this.prevented += 1; },
+    stopPropagation() { this.stopped += 1; },
+  };
+  doc.listeners[0].listener(ignored);
+  assert.equal(ignored.prevented, 0, "unhandled keys are left alone");
+  assert.equal(ignored.stopped, 0);
+  assert.deepEqual(dispatched, ["f", "x"]);
+
+  disposeFirst();
+  assert.equal(doc.listeners.length, 1, "the listener survives while another panel is registered");
+  disposeSecond();
+  assert.equal(doc.listeners.length, 0, "the listener is always removed on unmount");
+  // Disposing twice is harmless and does not underflow the reference count.
+  disposeSecond();
+  assert.equal(doc.listeners.length, 0);
+  // A null document (server-side evaluation) is a no-op.
+  assert.equal(typeof installGlobalShortcutListener(null, dispatch), "function");
+});
+
+test("global shortcuts stay opt-in and the document listener is wired defensively", () => {
+  const { presentationOf } = loadInternals();
+  assert.equal(presentationOf({ presentation: {} }).globalShortcuts, false);
+  assert.equal(presentationOf({ presentation: { globalShortcuts: "yes" } }).globalShortcuts, false, "only a real true enables it");
+  assert.equal(presentationOf({ presentation: { globalShortcuts: true } }).globalShortcuts, true);
+  // The body attaches the shared document listener only behind that flag and always
+  // disposes both the panel registration and the listener.
+  assert.match(SOURCE, /if \(globalShortcutsEnabled !== true\) return undefined;/);
+  assert.match(SOURCE, /registerGlobalShortcutPanel\(\(event\) => \{/);
+  assert.match(SOURCE, /installGlobalShortcutListener\(doc, dispatchGlobalShortcut\)/);
+  assert.match(SOURCE, /disposePanel\(\);\s*disposeListener\(\);/);
+});
+
+// ── wave 8-C: presentation-driven rendering ────────────────────────────────
+
+test("dateType and dateFormat drive the row and detail timestamps", () => {
+  const { formatCommitDate, rowMetaParts, personLine, absoluteTime, relativeTime, DetailView } = loadInternals();
+  const seconds = 1700000000;
+  const pad = (value) => String(value).padStart(2, "0");
+  const isoParts = (value) => {
+    const date = new Date(value * 1000);
+    const day = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+    return { day, dateTime: day + " " + pad(date.getHours()) + ":" + pad(date.getMinutes()) };
+  };
+  const iso = isoParts(seconds);
+  assert.equal(formatCommitDate(seconds, { dateFormat: "ISO Date Only" }, "en"), iso.day);
+  assert.equal(formatCommitDate(seconds, { dateFormat: "ISO Date & Time" }, "en"), iso.dateTime);
+  assert.equal(formatCommitDate(seconds, { dateFormat: "Relative" }, "en"), relativeTime(seconds, "en"), "Relative reuses the existing formatter");
+  assert.notEqual(formatCommitDate(seconds, { dateFormat: "Date Only" }, "en"), formatCommitDate(seconds, { dateFormat: "Date & Time" }, "en"));
+  assert.equal(formatCommitDate(seconds, { dateFormat: "ISO Date & Time" }, "en"), iso.dateTime, "ISO stays on local-time components");
+  assert.equal(formatCommitDate(seconds, { dateFormat: "bogus" }, "en"), "", "malformed format keeps the legacy path");
+  assert.equal(formatCommitDate(seconds, {}, "en"), "");
+
+  // dateType selects the row's timestamp; dateFormat is applied to it.
+  const commit = { abbrev: "abc1234", authorName: "Ann", authorTime: seconds, committerTime: seconds + 86_400 };
+  const authorSeconds = isoParts(seconds).day;
+  assert.equal(rowMetaParts(commit, undefined, "en", { dateType: "Author Date", dateFormat: "ISO Date Only" })[2], authorSeconds);
+  assert.equal(rowMetaParts(commit, undefined, "en", { dateType: "Commit Date", dateFormat: "ISO Date Only" })[2], isoParts(seconds + 86_400).day);
+  // Missing presentation keeps today's relative row date.
+  assert.equal(rowMetaParts(commit, undefined, "en")[2], relativeTime(seconds, "en"));
+
+  // Details: configured formats replace the legacy absolute (relative) pair.
+  assert.equal(personLine("Ann", "ann@x", seconds, "en", { dateFormat: "ISO Date & Time" }), "Ann <ann@x> · " + iso.dateTime);
+  assert.equal(
+    personLine("Ann", "ann@x", seconds, "en"),
+    "Ann <ann@x> · " + absoluteTime(seconds, "en") + " (" + relativeTime(seconds, "en") + ")",
+    "missing dateFormat keeps the legacy detail line",
+  );
+
+  const detailCommit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: seconds,
+    committerName: "Bob", committerEmail: "bob@x", committerTime: seconds, subject: "Fix", body: "", refs: [],
+    stats: { files: 0, insertions: 0, deletions: 0 }, files: [],
+  };
+  const common = {
+    t: (key) => key, commit: detailCommit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+  };
+  const presented = collectElements(DetailView({ ...common, presentation: { dateFormat: "ISO Date Only" } }));
+  const presentedText = presented.map((element) => element.children.join("")).join(" | ");
+  assert.match(presentedText, new RegExp(iso.day.replace(/-/g, "\\-")), "the detail shows the configured ISO date");
+  const legacy = collectElements(DetailView({ ...common, presentation: undefined }));
+  const legacyText = legacy.map((element) => element.children.join("")).join(" | ");
+  assert.ok(legacyText.includes(relativeTime(seconds, "en")), "without presentation the legacy absolute + relative is kept");
+});
+
+test("columnVisibility seeds the default columns and malformed values stay visible", () => {
+  const { columnsOf, Toolbar } = loadInternals();
+  assert.deepEqual(plain(columnsOf({ columnVisibility: { Date: false, Author: true, Commit: false } })), {
+    author: true,
+    date: false,
+    hash: false,
+  });
+  assert.deepEqual(plain(columnsOf(null)), { author: true, date: true, hash: true });
+  assert.deepEqual(plain(columnsOf({ columnVisibility: { Date: "no", Author: 0, Commit: null } })), { author: true, date: true, hash: true });
+  assert.deepEqual(plain(columnsOf({ columnVisibility: { Date: false, Author: true, Commit: true } })), { author: true, date: false, hash: true });
+  // The toolbar checkboxes render the seeded visibility.
+  const tree = collectElements(
+    Toolbar({
+      t: (key) => key,
+      repoLabel: "repo",
+      repoPath: "/repo",
+      branchLabel: "main",
+      dirty: 0,
+      busy: false,
+      backVisible: false,
+      menuOpen: true,
+      running: false,
+      order: "date",
+      findOpen: false,
+      filterOpen: false,
+      columns: columnsOf({ columnVisibility: { Date: false, Author: true, Commit: false } }),
+      onToggleColumn() {}, onRefresh() {}, onToggleMenu() {}, onCloseMenu() {}, onFetch() {},
+      onOpenRemotes() {}, onBack() {}, onToggleFind() {}, onToggleFilter() {}, onOrderChange() {},
+    }),
+  );
+  const boxes = tree.filter((element) => element.props.type === "checkbox");
+  assert.deepEqual(Array.from(boxes, (box) => box.props.checked), [true, false, false], "Author on, Date/Commit off");
+  // Body wiring: the graph's presentation seeds the state exactly once.
+  assert.match(SOURCE, /setColumns\(columnsOf\(presentation\)\)/);
+  assert.match(SOURCE, /columnsInitialized\.current/);
+});
+
+test("fileViewType and compactFolders seed the file view and tree compaction", () => {
+  const { fileViewOf, compactFoldersOf, buildFileTree, CompareView } = loadInternals();
+  assert.equal(fileViewOf({ fileViewType: "tree" }), "tree");
+  assert.equal(fileViewOf({ fileViewType: "flat" }), "flat");
+  assert.equal(fileViewOf({ fileViewType: "bogus" }), "flat");
+  assert.equal(fileViewOf(null), "flat");
+  assert.equal(compactFoldersOf({ compactFolders: false }), false);
+  assert.equal(compactFoldersOf({}), true);
+  const files = [{ path: "a/b/c/x.js" }, { path: "a/b/c/y.js" }];
+  assert.deepEqual(Array.from(buildFileTree(files).nodes, (node) => node.name), ["a/b/c"], "default compacts");
+  const expanded = buildFileTree(files, { compact: false });
+  assert.deepEqual(Array.from(expanded.nodes, (node) => node.name), ["a"]);
+  assert.deepEqual(Array.from(expanded.nodes[0].children, (node) => node.name), ["b"]);
+  assert.deepEqual(Array.from(expanded.nodes[0].children[0].children, (node) => node.name), ["c"]);
+
+  const value = {
+    base: "b1",
+    head: "h1",
+    baseAbbrev: "b1",
+    headAbbrev: "h1",
+    stats: { files: 1, insertions: 1, deletions: 0 },
+    files: [{ status: "M", path: "a/b/c/x.js", added: 1, removed: 0 }],
+  };
+  const common = {
+    t: (key) => key,
+    pair: { base: "b1", head: "h1" },
+    value,
+    status: "ready",
+    error: null,
+    sessionId: "s1",
+    cache: { current: new Map() },
+    onExit() {}, onSwap() {}, onRetry() {},
+  };
+  const tree = collectElements(CompareView({ ...common, presentation: { fileViewType: "tree", compactFolders: false } }));
+  const fileTree = tree.find((element) => typeof element.type === "function" && element.type.name === "FileTree");
+  assert.ok(fileTree, "File Tree is the seeded default");
+  assert.deepEqual(Array.from(fileTree.props.nodes, (node) => node.name), ["a"], "compactFolders:false expands the chain");
+  const flat = collectElements(CompareView({ ...common }));
+  assert.equal(flat.some((element) => typeof element.type === "function" && element.type.name === "FileTree"), false, "missing presentation stays flat");
+  assert.ok(flat.some((element) => String(element.props.className || "").includes("dgg-files")));
+  // DetailView uses the same helpers.
+  assert.match(SOURCE, /fileViewOf\(settings\)/);
+  assert.match(SOURCE, /buildFileTree\(files, \{ compact: compactFolders \}\)/);
+});
+
+test("autoCenterDetails scrolls the detail into view only when enabled", () => {
+  const { autoCenterDetailsOf, scrollDetailIntoView } = loadInternals();
+  assert.equal(autoCenterDetailsOf({ autoCenterDetails: true }), true);
+  assert.equal(autoCenterDetailsOf({}), false);
+  assert.equal(autoCenterDetailsOf(null), false);
+  const calls = [];
+  const node = { scrollIntoView: (options) => calls.push(options) };
+  assert.equal(scrollDetailIntoView(node, true), true);
+  assert.deepEqual(plain(calls), [{ block: "nearest" }]);
+  assert.equal(scrollDetailIntoView(node, false), false);
+  assert.equal(scrollDetailIntoView(null, true), false);
+  assert.equal(scrollDetailIntoView({}, true), false);
+  assert.match(SOURCE, /scrollDetailIntoView\(rootRef\.current, autoCenter\)/);
+  assert.match(SOURCE, /autoCenterDetailsOf\(settings\)/);
+});
+
+test("reference labels reorder tags to the right and merge local/remote chips", () => {
+  const { refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, RefChips, CommitRow, DetailView } = loadInternals();
+  const rawRefs = ["HEAD", "main", "origin/main", "tag: v1.0", "origin/release"];
+  const normal = layoutRefChips(rawRefs, new Map(), 10, {});
+  assert.deepEqual(Array.from(normal.chips, (chip) => chip.kind + ":" + chip.label), [
+    "head:HEAD",
+    "branch:main",
+    "remote:origin/main",
+    "tag:v1.0",
+    "remote:origin/release",
+  ]);
+  assert.equal(normal.tagsOnRight, false);
+
+  const combined = layoutRefChips(rawRefs, new Map(), 10, { combineLocalAndRemoteBranchLabels: true });
+  assert.deepEqual(Array.from(combined.chips, (chip) => chip.label), ["HEAD", "main (origin/main)", "v1.0", "origin/release"]);
+  assert.deepEqual(Array.from(combined.chips[1].combined), ["origin/main"]);
+  assert.equal(combineLocalAndRemoteChips([{ key: "x", label: "main", kind: "branch" }]).length, 1, "nothing to merge stays untouched");
+
+  const leftRight = layoutRefChips(rawRefs, new Map(), 10, { referenceLabelAlignment: "Branches (on the left) & Tags (on the right)" });
+  assert.equal(leftRight.tagsOnRight, true);
+  assert.equal(leftRight.alignedToGraph, false);
+  assert.equal(leftRight.chips[leftRight.chips.length - 1].kind, "tag", "tags move to the end");
+  const graphAligned = layoutRefChips(rawRefs, new Map(), 10, { referenceLabelAlignment: "Branches (aligned to the graph) & Tags (on the right)" });
+  assert.equal(graphAligned.alignedToGraph, true);
+  assert.equal(graphAligned.tagsOnRight, true);
+  assert.equal(refLabelConfig({ referenceLabelAlignment: "bogus" }).alignment, "Normal", "unknown alignment falls back");
+
+  // RefChips renders the tag cluster in its right-hand group and the graph inset class.
+  const chips = [{ key: "b", label: "main", kind: "branch" }, { key: "t", label: "v1", kind: "tag" }];
+  const rendered = collectElements(RefChips({ t: (key) => key, chips, tagsOnRight: true, alignedToGraph: true }));
+  const container = rendered.find((element) => element.type === "span");
+  assert.match(container.props.className, /dgg-chips-aligned/);
+  const right = rendered.find((element) => element.props.className === "dgg-chips-right");
+  assert.ok(right, "the tag cluster gets its own right-aligned group");
+  assert.ok(right.children.flat().some((child) => String(child.props.className || "").includes("dgg-chip-tag")));
+  const normalRendered = collectElements(RefChips({ t: (key) => key, chips }));
+  assert.equal(normalRendered.some((element) => element.props.className === "dgg-chips-right"), false);
+
+  // Commit rows and the detail pane receive the same layout.
+  const row = CommitRow({
+    t: (key) => key,
+    commit: { hash: "h1", abbrev: "h1", subject: "S", parents: [], refs: rawRefs, authorName: "Ann", authorTime: 1700000000 },
+    row: { lane: 0, edges: [] },
+    laneCount: 1,
+    refIndex: new Map(),
+    presentation: { referenceLabelAlignment: "Branches (on the left) & Tags (on the right)", combineLocalAndRemoteBranchLabels: true },
+  });
+  const refChips = collectElements(row).find((element) => typeof element.type === "function" && element.type.name === "RefChips");
+  assert.equal(refChips.props.tagsOnRight, true);
+  assert.deepEqual(Array.from(refChips.props.chips, (chip) => chip.label), ["HEAD", "main (origin/main)", "origin/release", "v1.0"], "branches first, tags last");
+
+  const detailCommit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000,
+    committerName: "Ann", committerEmail: "ann@x", committerTime: 1700000000, subject: "S", body: "", refs: rawRefs,
+    stats: { files: 0, insertions: 0, deletions: 0 }, files: [],
+  };
+  const detail = collectElements(DetailView({
+    t: (key) => key, commit: detailCommit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+    presentation: { referenceLabelAlignment: "Branches (on the left) & Tags (on the right)", combineLocalAndRemoteBranchLabels: true },
+  }));
+  const detailChips = detail.find((element) => typeof element.type === "function" && element.type.name === "RefChips");
+  assert.equal(detailChips.props.tagsOnRight, true);
+  assert.deepEqual(Array.from(detailChips.props.chips, (chip) => chip.label), ["HEAD", "main (origin/main)", "origin/release", "v1.0"], "branches first, tags last");
+});
+
+test("muteMergeCommits and muteNonAncestors de-emphasize without filtering", () => {
+  const { nonAncestorHashes, CommitRow, CommitList, layoutGraph, filterCommits } = loadInternals();
+  const commits = [
+    { hash: "head", abbrev: "head", subject: "Head", parents: ["parent"], refs: [] },
+    { hash: "parent", abbrev: "parent", subject: "Parent", parents: ["root"], refs: [] },
+    { hash: "root", abbrev: "root", subject: "Root", parents: [], refs: [] },
+    { hash: "side", abbrev: "side", subject: "Side", parents: [], refs: [] },
+  ];
+  const muted = nonAncestorHashes(commits, "head");
+  assert.deepEqual(Array.from(muted), ["side"]);
+  assert.deepEqual(Array.from(nonAncestorHashes(commits, "missing")), [], "an unresolvable HEAD mutes nothing");
+  assert.deepEqual(Array.from(nonAncestorHashes(commits, "")), []);
+  assert.deepEqual(Array.from(nonAncestorHashes([{ hash: "a", parents: ["a"] }], "a")), [], "cycles are safe");
+
+  const t = (key) => key;
+  const merge = { hash: "m", abbrev: "m", subject: "Merge", parents: ["a", "b"], refs: [], authorName: "Ann", authorTime: 1700000000 };
+  const mergeRow = CommitRow({
+    t, commit: merge, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(),
+    presentation: { muteMergeCommits: true },
+  });
+  assert.match(mergeRow.props.className, /dgg-row-muted/);
+  assert.match(mergeRow.props["aria-label"], /mute\.mergeCommit/);
+  assert.equal(typeof mergeRow.props.onClick, "function", "a muted row stays selectable");
+  const normalRow = CommitRow({
+    t, commit: { ...merge, parents: ["a"] }, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(),
+    presentation: { muteMergeCommits: true },
+  });
+  assert.equal(/dgg-row-muted/.test(normalRow.props.className), false);
+
+  const ancestorRow = CommitRow({
+    t, commit: { ...commits[3] }, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(),
+    presentation: {}, mutedHashes: muted,
+  });
+  assert.match(ancestorRow.props.className, /dgg-row-muted/);
+  assert.match(ancestorRow.props["aria-label"], /mute\.nonAncestor/);
+  const rowForHead = CommitRow({
+    t, commit: { ...commits[0] }, row: { lane: 0, edges: [] }, laneCount: 1, refIndex: new Map(),
+    presentation: {}, mutedHashes: muted,
+  });
+  assert.equal(/dgg-row-muted/.test(rowForHead.props.className), false);
+
+  // The list still renders every commit and find still matches muted rows.
+  const layout = layoutGraph(commits);
+  const list = collectElements(CommitList({
+    t, value: { commits }, layout, refIndex: new Map(), presentation: { muteMergeCommits: true }, mutedHashes: muted,
+    uncommitted: null, indices: [0, 1, 2, 3], activeHash: "",
+    onSelect() {}, onMenu() {}, onRefMenu() {}, onLoadMore() {}, canLoadMore: false, loadingMore: false,
+  }));
+  const rows = list.filter((element) => typeof element.type === "function" && element.type.name === "CommitRow");
+  assert.equal(rows.length, 4, "muting never hides rows");
+  assert.equal(rows.find((element) => element.props.commit.hash === "side").props.mutedHashes, muted, "the list forwards the muted set");
+  assert.equal(filterCommits(commits, "side").matches, 1, "find ignores muting");
+});
+
+test("custom emojiMappings override and extend the built-in shortcodes", () => {
+  const { emojiTable, sanitizeEmojiMappings, richTextParts, RichText } = loadInternals();
+  const presentation = {
+    showEmoji: true,
+    emojiMappings: {
+      smile: "XX",
+      party_parrot: "🦜",
+      bad: 7,
+      " ": "z",
+      toolong: "y".repeat(80),
+    },
+  };
+  presentation.emojiMappings["x".repeat(80)] = "oversized-shortcode";
+  const table = emojiTable(presentation);
+  assert.equal(table.smile, "XX", "custom mappings override built-ins");
+  assert.equal(table.party_parrot, "🦜", "new shortcodes are added");
+  assert.equal(table.bug, "🐛", "built-ins remain");
+  assert.equal(table.bad, undefined, "non-string glyphs are dropped");
+  assert.equal(table.toolong, undefined, "oversized glyphs are dropped");
+  assert.equal(table["x".repeat(80)], undefined, "oversized shortcodes are dropped");
+  assert.deepEqual(plain(sanitizeEmojiMappings([
+    { shortcode: ":wave:", emoji: "👋" },
+    { shortcode: "x".repeat(80), emoji: "y" },
+    { shortcode: "ok", emoji: 5 },
+    null,
+  ])), { wave: "👋" }, "the host's array shape is accepted and sanitized");
+
+  const parts = richTextParts("Party :party_parrot: :smile:", presentation);
+  assert.deepEqual(Array.from(parts, (part) => part.type + ":" + part.text), ["text:Party ", "emoji:🦜", "text: ", "emoji:XX"]);
+  const rendered = collectElements(RichText({ text: ":party_parrot:", presentation }));
+  assert.ok(rendered.some((element) => element.children.join("") === "🦜"), "the custom glyph reaches the DOM nodes");
+  assert.equal(richTextParts(":smile:", {}).length, 1, "built-ins still work without custom mappings");
+});
+
+test("missing presentation keeps every pre-wave-8 default", () => {
+  const {
+    presentationOf, columnsOf, fileViewOf, compactFoldersOf, autoCenterDetailsOf, refLabelConfig,
+    emojiTable, rowMetaParts, relativeTime, layoutRefChips,
+  } = loadInternals();
+  const defaults = presentationOf(null);
+  assert.equal(defaults.dateType, "Author Date");
+  assert.equal(defaults.dateFormat, "");
+  assert.deepEqual(plain(columnsOf(defaults)), { author: true, date: true, hash: true });
+  assert.equal(fileViewOf(defaults), "flat");
+  assert.equal(compactFoldersOf(defaults), true);
+  assert.equal(autoCenterDetailsOf(defaults), false);
+  assert.equal(refLabelConfig(defaults).combine, false);
+  assert.equal(refLabelConfig(defaults).tagsOnRight, false);
+  assert.equal(refLabelConfig(defaults).alignment, "Normal");
+  assert.equal(defaults.muteMergeCommits, false);
+  assert.equal(defaults.muteNonAncestors, false);
+  assert.deepEqual(plain(defaults.emojiMappings), {});
+  assert.equal(emojiTable(defaults).smile, "😄");
+  const commit = { abbrev: "a1", authorName: "Ann", authorTime: 1700000000 };
+  assert.equal(rowMetaParts(commit, undefined, "en", defaults)[2], relativeTime(1700000000, "en"), "the row date stays relative");
+  assert.deepEqual(
+    Array.from(layoutRefChips(["main", "origin/main"], new Map(), 10, defaults).chips, (chip) => chip.label),
+    ["main", "origin/main"],
+    "no combine and no reordering by default",
+  );
+  // Malformed presentation values normalize to those same defaults.
+  const hostile = presentationOf({
+    presentation: {
+      dateFormat: 7,
+      dateType: "Weird",
+      columnVisibility: "no",
+      fileViewType: "Tree-ish",
+      compactFolders: "yes",
+      autoCenterDetails: "yes",
+      referenceLabelAlignment: "Sideways",
+      combineLocalAndRemoteBranchLabels: "yes",
+      muteMergeCommits: "yes",
+      muteNonAncestors: 1,
+      emojiMappings: "nope",
+    },
+  });
+  assert.equal(hostile.dateFormat, "");
+  assert.equal(hostile.dateType, "Author Date");
+  assert.deepEqual(plain(hostile.columnVisibility), { Date: true, Author: true, Commit: true });
+  assert.equal(hostile.fileViewType, "");
+  assert.equal(hostile.compactFolders, true, "only an explicit false disables compaction");
+  assert.equal(hostile.autoCenterDetails, false);
+  assert.equal(hostile.referenceLabelAlignment, "Normal");
+  assert.equal(hostile.combineLocalAndRemoteBranchLabels, false);
+  assert.equal(hostile.muteMergeCommits, false);
+  assert.equal(hostile.muteNonAncestors, false);
+  assert.deepEqual(plain(hostile.emojiMappings), {});
+});
+
+// ── wave 8-C part 2: markdown / dialogs / menus / a11y / repos / pagination ──
+
+/** Plain text of a fake-React tree (elements recurse through their children). */
+function richTextOf(node) {
+  if (node === null || node === undefined) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(richTextOf).join("");
+  if (typeof node === "object" && Array.isArray(node.children)) return richTextOf(node.children);
+  return "";
+}
+
+test("markdown subset renders bold/italic/code and composes with emoji and issue links", () => {
+  const { richTextParts, RichText, TagDetails, DetailView } = loadInternals();
+  const presentation = { markdown: true, showEmoji: true, issueUrlTemplate: "https://issues/{id}" };
+  const tree = RichText({ text: "**bold** *italic* _also_ ***both*** `code *not*` :bug: #7", presentation });
+  const elements = collectElements(tree);
+  const tags = elements.filter((element) => typeof element.type === "string").map((element) => element.type);
+  assert.deepEqual(tags, ["strong", "em", "em", "strong", "em", "code", "span", "a"], "bold, italic, italic, bold-italic, code, emoji, issue");
+  assert.equal(richTextOf(tree), "bold italic also both code *not* 🐛 #7", "markers are removed, code content stays literal");
+  const link = elements.find((element) => element.type === "a");
+  assert.equal(link.props.href, "https://issues/7");
+  const emoji = elements.find((element) => element.type === "span");
+  assert.equal(emoji.props["aria-label"], ":bug:");
+
+  // Unmatched markers stay literal.
+  const literal = richTextParts("**open and *half", { markdown: true });
+  assert.deepEqual(Array.from(literal, (part) => part.type + ":" + part.text), ["text:**open and *half"]);
+  assert.deepEqual(Array.from(richTextParts("***", { markdown: true }), (part) => part.text), ["***"]);
+
+  // markdown:false keeps exactly today's text handling (emoji still processed).
+  const plain = richTextParts("**bold** :bug:", { showEmoji: true });
+  assert.equal(plain.map((part) => part.text).join(""), "**bold** 🐛");
+
+  // Tag messages use markdown only when enabled; otherwise they stay literal.
+  const message = "**bold** :tada:";
+  const tag = collectElements(TagDetails({
+    t: (key) => key, name: "v1", status: "ready",
+    value: { annotated: false, message }, presentation: { markdown: true, showEmoji: true }, onClose() {},
+  }));
+  const tagRich = tag.filter((element) => typeof element.type === "function" && element.type.name === "RichText");
+  assert.equal(tagRich.length, 1);
+  assert.ok(collectElements(tagRich[0].type(tagRich[0].props)).some((element) => element.type === "strong"));
+  const plainTag = collectElements(TagDetails({ t: (key) => key, name: "v1", status: "ready", value: { annotated: false, message }, onClose() {} }));
+  const pre = plainTag.find((element) => String(element.props.className || "") === "dgg-body");
+  assert.equal(richTextOf(pre), message, "without markdown the tag message is literal text");
+
+  // Commit subject/body flow through the same renderer.
+  const commit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000,
+    committerName: "Ann", committerEmail: "ann@x", committerTime: 1700000000,
+    subject: "**Shipped**", body: "_Body_", refs: [], stats: { files: 0, insertions: 0, deletions: 0 }, files: [],
+  };
+  const detail = collectElements(DetailView({
+    t: (key) => key, commit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+    presentation: { markdown: true, showEmoji: false },
+  }));
+  const detailRich = detail.filter((element) => typeof element.type === "function" && element.type.name === "RichText");
+  const detailRendered = detailRich.flatMap((element) => collectElements(element.type(element.props)));
+  assert.ok(detailRendered.some((element) => element.type === "strong"));
+  assert.ok(detailRendered.some((element) => element.type === "em"));
+});
+
+test("dialogDefaults seed all nine dialog options and stay overridable", () => {
+  const { sanitizeDialogDefaults, dialogDefaultsFor, actionDialogSpec, ActionDialog } = loadInternals();
+  const raw = {
+    applyStash: { reinstateIndex: true },
+    popStash: { reinstateIndex: true },
+    merge: { noCommit: true, noFastForward: true, squashCommits: true },
+    pullBranch: { noFastForward: true },
+    resetCurrentBranchToCommit: { mode: "Hard" },
+    resetUncommittedChanges: { mode: "Mixed" },
+    stashUncommittedChanges: { includeUntracked: true },
+    unknownGroup: { anything: true },
+  };
+  const sanitized = sanitizeDialogDefaults(raw);
+  assert.deepEqual(plain(sanitized), {
+    applyStash: { reinstateIndex: true },
+    popStash: { reinstateIndex: true },
+    merge: { noCommit: true, noFastForward: true, squashCommits: true },
+    pullBranch: { noFastForward: true },
+    resetCurrentBranchToCommit: { mode: "hard" },
+    resetUncommittedChanges: { mode: "mixed" },
+    stashUncommittedChanges: { includeUntracked: true },
+  });
+  assert.deepEqual(plain(sanitizeDialogDefaults({ merge: { noCommit: "yes" }, resetCurrentBranchToCommit: { mode: "bogus" } })), {}, "malformed entries fall back");
+  assert.deepEqual(plain(sanitizeDialogDefaults(null)), {});
+
+  assert.deepEqual(plain(dialogDefaultsFor("merge", sanitized)), { flags: { noCommit: true, noFastForward: true, squash: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("pullBranch", sanitized)), { flags: { noFastForward: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("resetToCommit", sanitized)), { flags: {}, mode: "hard" });
+  assert.deepEqual(plain(dialogDefaultsFor("resetUncommitted", sanitized)), { flags: {}, mode: "mixed" });
+  assert.deepEqual(plain(dialogDefaultsFor("stashApply", sanitized)), { flags: { reinstateIndex: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("stashPop", sanitized)), { flags: { reinstateIndex: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("stashUncommitted", sanitized)), { flags: { includeUntracked: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("stashPush", sanitized)), { flags: { includeUntracked: true }, mode: "" });
+  assert.deepEqual(plain(dialogDefaultsFor("merge", {})), { flags: {}, mode: "" }, "today's defaults when absent");
+
+  const mergeSpec = actionDialogSpec("merge", { dialogDefaults: sanitized });
+  assert.deepEqual(plain(mergeSpec.defaults), { flags: { noCommit: true, noFastForward: true, squash: true }, mode: "" }, "the spec carries the defaults");
+  const mergeDialog = { kind: "merge", hash: "h", requestedRef: "", preview: null, dirtySensitive: false, ...mergeSpec };
+  const mergeTree = collectElements(ActionDialog({ t: (key) => key, dialog: mergeDialog, dirty: 0, running: false, onCancel() {}, onConfirm() {} }));
+  const boxes = mergeTree.filter((element) => element.props.type === "checkbox");
+  assert.deepEqual(Array.from(boxes, (box) => box.props.checked), [true, true, true], "No-FF / no-commit / squash pre-checked");
+  assert.ok(boxes.every((box) => typeof box.props.onChange === "function"), "the reader can still override each flag");
+
+  const resetSpec = actionDialogSpec("resetToCommit", { dialogDefaults: sanitized });
+  const resetTree = collectElements(ActionDialog({
+    t: (key) => key,
+    dialog: { kind: "resetToCommit", hash: "h", requestedRef: "", preview: null, ...resetSpec },
+    dirty: 0, running: false, onCancel() {}, onConfirm() {},
+  }));
+  const select = resetTree.find((element) => element.type === "select");
+  assert.equal(select.props.value, "hard", "the configured reset mode is preselected");
+  const optionValues = resetTree.filter((element) => element.type === "option").map((element) => element.props.value);
+  assert.deepEqual(optionValues, ["soft", "mixed", "hard"]);
+
+  // Submit still reads the (overridable) dialog state; the initial values are the defaults.
+  const confirmed = [];
+  const tree2 = collectElements(ActionDialog({
+    t: (key) => key,
+    dialog: { kind: "merge", hash: "h", requestedRef: "", preview: null, dirtySensitive: false, ...actionDialogSpec("merge", { dialogDefaults: sanitized }) },
+    dirty: 0, running: false, onCancel() {}, onConfirm: (...args) => confirmed.push(args),
+  }));
+  const run = tree2.find((element) => element.type === "button" && element.children.join("") === "action.run");
+  run.props.onClick();
+  assert.deepEqual(plain(confirmed[0])[3], { noFastForward: true, noCommit: true, squash: true }, "the seeded flags are submitted and can be toggled");
+});
+
+test("contextMenuVisibility hides normalized ids while keeping menus usable", () => {
+  const {
+    sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems,
+    commitMenuItems, commitActionItems, insertMenuItems,
+  } = loadInternals();
+  const sanitized = sanitizeContextMenuVisibility({
+    commit: { cherryPick: false, renameBranch: true, weird: "no" },
+    branch: { deleteBranch: false },
+    bad: 5,
+  });
+  assert.deepEqual(plain(sanitized), { commit: { cherryPick: false, renameBranch: true }, branch: { deleteBranch: false } });
+  assert.equal(normalizeMenuId("cherry-pick"), "cherrypick");
+  assert.equal(normalizeMenuId("cherryPick"), "cherrypick");
+  assert.deepEqual(Array.from(hiddenMenuIds(sanitized)).sort(), ["cherrypick", "deletebranch"]);
+
+  const items = [
+    { id: "cherry-pick", kind: "cherryPick" },
+    { id: "copy-hash", kind: "copyHash" },
+    { id: "delete-branch", kind: "deleteBranch" },
+  ];
+  assert.deepEqual(Array.from(visibleMenuItems(items, sanitized), (item) => item.id), ["copy-hash", "delete-branch"], "camelCase kebab-case match; the delete guardrail stays");
+  assert.equal(visibleMenuItems(items, { commit: { cherryPick: true } }).length, 3, "true is visible");
+  assert.equal(visibleMenuItems(items, {}).length, 3, "absent is visible");
+  assert.equal(visibleMenuItems(items, { anywhere: { notAnAction: false } }).length, 3, "unknown ids are ignored");
+  const only = [{ id: "copy-hash", kind: "copyHash" }];
+  assert.equal(visibleMenuItems(only, { commit: { copyHash: false } }).length, 1, "never remove the only entry");
+
+  const blankCommit = { hash: "h1", parents: [] };
+  const all = insertMenuItems(commitMenuItems(blankCommit, {}), commitActionItems(blankCommit, {}));
+  const filtered = visibleMenuItems(all, { commit: { cherryPick: false } });
+  assert.equal(filtered.some((item) => item.kind === "cherryPick"), false);
+  assert.ok(filtered.length > 1, "the rest of the menu survives");
+
+  assert.equal((SOURCE.match(/visibleMenuItems\(/g) || []).length >= 3, true, "the memo, commit menu and ref menu all filter");
+  assert.match(SOURCE, /presentation\.contextMenuVisibility/);
+});
+
+test("enhancedAccessibility adds explicit per-file change indicators", () => {
+  const { FileRow, DetailView, CompareView, fileStatusKey } = loadInternals();
+  assert.equal(fileStatusKey("A"), "file.status.A");
+  assert.equal(fileStatusKey("M"), "file.status.M");
+  assert.equal(fileStatusKey("D"), "file.status.D");
+  assert.equal(fileStatusKey("R"), "file.status.R");
+  assert.equal(fileStatusKey("C"), "file.status.C");
+  assert.equal(fileStatusKey("T"), "file.status.T");
+  assert.equal(fileStatusKey("U"), "file.status.U");
+  assert.equal(fileStatusKey("Z"), "file.status.other");
+  const file = { status: "M", path: "a.txt", added: 1, removed: 0 };
+  const enhanced = collectElements(FileRow({ t: (key) => key, file, cache: { current: new Map() }, enhancedAccessibility: true }));
+  const label = enhanced.find((element) => String(element.props.className || "").includes("dgg-st-text"));
+  assert.equal(label.children.join(""), "file.status.M", "explicit textual indicator");
+  const letter = enhanced.find((element) => String(element.props.className || "").includes("dgg-st dgg-st-M"));
+  assert.equal(letter.props["aria-hidden"], undefined, "the letter is exposed when enhanced");
+  const plain = collectElements(FileRow({ t: (key) => key, file, cache: { current: new Map() } }));
+  assert.equal(plain.some((element) => String(element.props.className || "").includes("dgg-st-text")), false);
+  assert.equal(plain.find((element) => String(element.props.className || "").includes("dgg-st dgg-st-M")).props["aria-hidden"], "true");
+
+  const commit = {
+    hash: "h1", abbrev: "h1", parents: [], authorName: "Ann", authorEmail: "ann@x", authorTime: 1700000000,
+    committerName: "Ann", committerEmail: "ann@x", committerTime: 1700000000, subject: "S", body: "", refs: [],
+    stats: { files: 1, insertions: 1, deletions: 0 }, files: [file],
+  };
+  const detail = collectElements(DetailView({
+    t: (key) => key, commit, refIndex: new Map(), branches: [], dirty: 0, dialog: null, run: null,
+    copy: { state: "idle", text: "" }, sessionId: "s1", diffCache: { current: new Map() },
+    onOpenDialog() {}, onCancelDialog() {}, onConfirmDialog() {}, onRunFetch() {}, onSelectCommit() {},
+    onCopy() {}, onRefMenu() {}, dropDisabledReason: "",
+    presentation: { enhancedAccessibility: true },
+  }));
+  const detailFileRow = detail.find((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(detailFileRow.props.enhancedAccessibility, true);
+  const compare = collectElements(CompareView({
+    t: (key) => key, pair: { base: "b", head: "h" },
+    value: { base: "b", head: "h", baseAbbrev: "b", headAbbrev: "h", stats: { files: 1, insertions: 1, deletions: 0 }, files: [file] },
+    status: "ready", error: null, sessionId: "s1", cache: { current: new Map() },
+    presentation: { enhancedAccessibility: true }, onExit() {}, onSwap() {}, onRetry() {},
+  }));
+  const compareFileRow = compare.find((element) => typeof element.type === "function" && element.type.name === "FileRow");
+  assert.equal(compareFileRow.props.enhancedAccessibility, true);
+  assert.match(SOURCE, /"data-dgg-enhanced-accessibility": presentation\.enhancedAccessibility === true/);
+  assert.match(SOURCE, /"aria-live": "polite"/, "completed actions keep the polite live region");
+});
+
+test("repositoryDropdownOrder sorts the repository select", () => {
+  const { orderedRepositories, RepoLabel } = loadInternals();
+  const repos = [
+    { path: "/ws/b", name: "b", isCurrent: false },
+    { path: "/ws/a", name: "z", isCurrent: true },
+    { path: "/x/c", name: "a", isCurrent: false },
+  ];
+  assert.deepEqual(Array.from(orderedRepositories(repos, "Full Path"), (repo) => repo.path), ["/ws/a", "/ws/b", "/x/c"]);
+  assert.deepEqual(Array.from(orderedRepositories(repos, "Name"), (repo) => repo.path), ["/x/c", "/ws/b", "/ws/a"]);
+  assert.deepEqual(Array.from(orderedRepositories(repos, "Workspace Full Path"), (repo) => repo.path), ["/ws/a", "/ws/b", "/x/c"]);
+  assert.deepEqual(Array.from(orderedRepositories(repos, ""), (repo) => repo.path), ["/ws/b", "/ws/a", "/x/c"], "absent keeps today's order");
+  assert.deepEqual(Array.from(orderedRepositories(repos, "bogus"), (repo) => repo.path), ["/ws/b", "/ws/a", "/x/c"], "malformed keeps today's order");
+  assert.notEqual(orderedRepositories(repos, "Full Path"), repos, "returns a new array");
+  assert.deepEqual(Array.from(repos, (repo) => repo.path), ["/ws/b", "/ws/a", "/x/c"], "input order is not mutated");
+
+  const optionPaths = (order) => {
+    const tree = collectElements(RepoLabel({
+      t: (key) => key, repoLabel: "repo", repoPath: "/ws/a",
+      repositories: { multiple: true, repos, truncated: false }, value: "", order, onChange() {},
+    }));
+    return tree.filter((element) => element.type === "option").map((element) => element.props.value).slice(1);
+  };
+  assert.deepEqual(optionPaths("Name"), ["/x/c", "/ws/b", "/ws/a"]);
+  assert.deepEqual(optionPaths("Full Path"), ["/ws/a", "/ws/b", "/x/c"]);
+  assert.deepEqual(optionPaths(""), ["/ws/b", "/ws/a", "/x/c"]);
+  assert.match(SOURCE, /repoOrder: presentation\.repositoryDropdownOrder/);
+});
+
+test("pagination settings drive the initial load, load-more step and auto-load", () => {
+  const { paginationOf, presentationOf, shouldAutoLoad, graphRequest } = loadInternals();
+  assert.deepEqual(plain(paginationOf({})), { initial: 120, step: 120, auto: false });
+  assert.deepEqual(plain(paginationOf({ initialLoad: 500, loadMore: 250, loadMoreAutomatically: true })), { initial: 500, step: 250, auto: true });
+  assert.deepEqual(plain(paginationOf({ initialLoad: 5000, loadMore: -3 })), { initial: 2000, step: 120, auto: false }, "clamped to 1–2000 and fallback step");
+  assert.deepEqual(plain(paginationOf({ initialLoad: 1.5, loadMore: "80" })), { initial: 120, step: 120, auto: false }, "non-integers fall back");
+
+  const pres = presentationOf({ presentation: { initialLoad: 500, loadMore: 250, loadMoreAutomatically: true } });
+  assert.equal(pres.initialLoad, 500);
+  assert.equal(pres.loadMore, 250);
+  assert.equal(pres.loadMoreAutomatically, true);
+  assert.equal(JSON.stringify(graphRequest({ sessionId: "s", limit: paginationOf(pres).initial })), JSON.stringify({ sessionId: "s", limit: 500 }));
+  assert.equal(paginationOf(pres).step, 250);
+
+  assert.equal(shouldAutoLoad(0, 1000, 800, true, false), false, "disabled");
+  assert.equal(shouldAutoLoad(0, 1000, 800, false, true), false, "nothing more to load");
+  assert.equal(shouldAutoLoad(0, 1000, 800, true, true), false, "far from the bottom");
+  assert.equal(shouldAutoLoad(260, 1000, 800, true, true), true, "within the threshold");
+  assert.equal(shouldAutoLoad(0, 600, 800, true, true), true, "content shorter than the viewport still loads");
+  assert.equal(shouldAutoLoad(0, 1000, 0, true, true), false, "no visible height");
+  assert.equal(shouldAutoLoad(Number.NaN, Number.NaN, Number.NaN, true, true), false);
+  assert.match(SOURCE, /paginationOf\(presentation\)/);
+  assert.match(SOURCE, /setLimit\(pagination\.initial\)/);
+  assert.match(SOURCE, /current \+ pagination\.step/);
+  assert.match(SOURCE, /onScroll: handleMainScroll/);
+});
+
+test("missing presentation keeps the part-2 defaults", () => {
+  const {
+    presentationOf, richTextParts, dialogDefaultsFor, sanitizeDialogDefaults, visibleMenuItems,
+    orderedRepositories, paginationOf, FileRow, fileStatusKey,
+  } = loadInternals();
+  const defaults = presentationOf(null);
+  assert.equal(defaults.markdown, false);
+  assert.equal(defaults.enhancedAccessibility, false);
+  assert.equal(defaults.repositoryDropdownOrder, "");
+  assert.equal(defaults.initialLoad, 0);
+  assert.equal(defaults.loadMore, 0);
+  assert.equal(defaults.loadMoreAutomatically, false);
+  assert.deepEqual(plain(defaults.dialogDefaults), {});
+  assert.deepEqual(plain(defaults.contextMenuVisibility), {});
+  assert.deepEqual(Array.from(richTextParts("**x**", defaults), (part) => part.type + ":" + part.text), ["text:**x**"], "no markdown without the setting");
+  assert.deepEqual(plain(dialogDefaultsFor("merge", defaults.dialogDefaults)), { flags: {}, mode: "" });
+  assert.deepEqual(plain(sanitizeDialogDefaults(defaults.dialogDefaults)), {});
+  const items = [{ id: "copy-hash", kind: "copyHash" }];
+  assert.equal(visibleMenuItems(items, defaults.contextMenuVisibility).length, 1);
+  assert.equal(orderedRepositories([{ path: "/b", name: "b" }, { path: "/a", name: "a" }], defaults.repositoryDropdownOrder)[0].path, "/b");
+  assert.deepEqual(plain(paginationOf(defaults)), { initial: 120, step: 120, auto: false });
+  const plainFile = collectElements(FileRow({ t: (key) => key, file: { status: "A", path: "a.txt" }, cache: { current: new Map() } }));
+  assert.equal(plainFile.some((element) => String(element.props.className || "").includes("dgg-st-text")), false);
+  assert.equal(fileStatusKey("A"), "file.status.A");
 });
