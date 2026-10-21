@@ -10,7 +10,8 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./settings": "./lib/settings.js"
   },
   "icon": "./icon.svg",
   "files": [
@@ -20,7 +21,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "lib/settings.js"
   ],
   "keywords": [
     "deepseek-harness",
