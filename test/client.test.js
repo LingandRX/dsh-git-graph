@@ -404,7 +404,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "refLabelConfig, layoutRefChips, combineLocalAndRemoteChips, nonAncestorHashes, sanitizeEmojiMappings, " +
         "emojiTable, scrollDetailIntoView, personLine, sanitizeDialogDefaults, dialogDefaultsFor, " +
         "sanitizeContextMenuVisibility, hiddenMenuIds, normalizeMenuId, visibleMenuItems, orderedRepositories, " +
-        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, fittingColumns, isDateOnlyLayout, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING, " +
+        "shouldAutoLoad, fileStatusKey, paginationOf, GitGraphBody, COLUMN_WIDTH_DEFAULTS, COLUMN_WIDTH_RANGES, refColourIndex, refIcon, refChipChildren, laneColor, laneBridge, fittingColumns, isDateOnlyLayout, DESC_MIN_WIDTH, DATE_COMPACT_WIDTH, ROW_HORIZONTAL_PADDING, " +
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
@@ -1571,12 +1571,35 @@ test("commit details expand inline under the selected row", () => {
   };
   const open = flattened(render({ selectedHash: "b", detailSlot: marker, detailHash: "b" }));
   const rowIndex = open.findIndex((element) => typeof element.type === "function" && element.type.name === "CommitRow" && element.props.commit.hash === "b");
-  const detailIndex = open.findIndex((element) => String(element.props.className || "").split(" ").includes("dgg-detail-inline"));
+  const detailIndex = open.findIndex((element) => String(element.props.className || "").split(" ").includes("dgg-detail-row"));
   assert.ok(rowIndex >= 0, "the selected row renders");
-  assert.equal(detailIndex, rowIndex + 1, "the detail panel sits directly under its commit row, inside the list");
-  assert.ok(collectElements(open[detailIndex]).some((element) => element.props.className === "detail-marker"));
+  assert.equal(detailIndex, rowIndex + 1, "the detail row sits directly under its commit row, inside the list");
+  const detailRow = open[detailIndex];
+  const graphCell = collectElements(detailRow).find((element) => String(element.props.className || "").split(" ").includes("dgg-detail-graph"));
+  assert.ok(graphCell, "the detail row keeps the graph column so the lanes stay continuous");
+  assert.ok(collectElements(detailRow).some((element) => element.props.className === "detail-marker"));
   const closed = flattened(render({ selectedHash: "", detailSlot: marker, detailHash: "" }));
-  assert.ok(!closed.some((element) => String(element.props.className || "").includes("dgg-detail-inline")), "no detail slot without a selected commit");
+  assert.ok(!closed.some((element) => String(element.props.className || "").includes("dgg-detail-row")), "no detail row without a selected commit");
+});
+
+test("the inline detail row bridges the graph lanes", () => {
+  const { laneBridge, laneColor, laneColor: colour } = loadInternals();
+  const palette = ["#101010", "#202020", "#303030"];
+  const row = { edges: [
+    { fromLane: 0, fromY: 0, toLane: 0, toY: 1 },
+    { fromLane: 1, fromY: 0.5, toLane: 2, toY: 1, colorLane: 2 },
+    { fromLane: 3, fromY: 1, toLane: 3, toY: 0.5 },
+  ] };
+  const lines = laneBridge(row, palette);
+  assert.equal(lines.length, 2, "only lanes continuing below the commit are bridged");
+  assert.deepEqual(plain(lines[0].props.style), { left: "8px", background: palette[0] }, "lane 0 keeps its column and colour");
+  assert.deepEqual(plain(lines[1].props.style), { left: "36px", background: palette[2] }, "lane 2 uses its colour lane");
+  assert.equal(lines[0].props.className, "dgg-bridge-line");
+  assert.equal(laneBridge(null, palette).length, 0);
+  assert.equal(laneBridge({ edges: [] }, palette).length, 0);
+  // Wiring: the detail row renders the bridge only when another row follows.
+  assert.match(SOURCE, /className: "dgg-detail-graph", "aria-hidden": "true" \}, hasNextRow === true \? laneBridge/);
+  assert.match(SOURCE, /\.dgg-detail-graph\{position:relative;flex:0 0 var\(--dgg-graph-w, 40px\)/);
 });
 
 test("DetailView renders a close control for inline details", () => {
@@ -1613,10 +1636,11 @@ test("DetailView renders a close control for inline details", () => {
 
 test("the tab keeps the list visible and opens details inline", () => {
   assert.match(SOURCE, /if \(wantsCompare !== true && selectedHash === hash\) \{/, "clicking the open commit again collapses it");
-  assert.match(SOURCE, /className: "dgg-detail-inline", role: "region"/);
+  assert.match(SOURCE, /className: "dgg-detail-row", role: "region"/);
   assert.match(SOURCE, /const backVisible = selected !== null && selected\.uncommitted === true;/, "only the uncommitted pane uses the page back button");
   assert.equal(SOURCE.split("detailSlot: inlineDetail,").length - 1, 2, "both the commit list and full-history results mount the inline detail");
-  assert.match(SOURCE, /\.dgg-detail-inline\{border-bottom:1px solid var\(--dsw-alias-border-l1\)/);
+  assert.match(SOURCE, /\.dgg-detail-row\{display:flex;align-items:stretch/);
+  assert.match(SOURCE, /\.dgg-bridge-line\{position:absolute;top:0;bottom:0/);
 });
 
 test("RefChips opens ref menus from buttons and from row spans", () => {
