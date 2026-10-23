@@ -6031,3 +6031,19 @@ test("date, author and commit column styles adapt to different column widths", (
   const compactHeaderCells = header.filter((el) => String(el.props.className || "").includes("dgg-colhead-compact"));
   assert.equal(compactHeaderCells.length, 3, "all 3 data columns in header get compact styling when narrowed");
 });
+
+test("buildListModel caches layout across summary updates for the same commits array", () => {
+  const { buildListModel, layoutRefChips } = loadInternals();
+  const commits = [
+    { hash: "c1", parents: [], subject: "init" },
+    { hash: "c2", parents: ["c1"], subject: "feature" },
+  ];
+  const model1 = buildListModel(commits, { visible: false, total: 0 });
+  const model2 = buildListModel(commits, { visible: true, total: 1, staged: 1, unstaged: 0, untracked: 0 });
+  assert.strictEqual(model1.layout, model2.layout, "re-uses cached layout object when commits reference is unchanged");
+
+  const emptyChips = layoutRefChips([], new Map(), 5, null);
+  assert.equal(emptyChips.chips.length, 0);
+  assert.equal(emptyChips.tagsOnRight, false);
+  assert.equal(emptyChips.alignedToGraph, false);
+});
