@@ -48,7 +48,7 @@
 | 全量历史搜索 | `POST /search` + `searchCommits()` | 单次 `git log --all -n 20000` 扫描，按 all/message/author/ref 匹配，offset/limit 分页，`scanned`/`capped` 上报；Find 栏"全部历史"模式 |
 | 工作区 ↔ 提交对比 | `/compare` 的 `working:true` + `/diff` 的 `working` scope | 已跟踪（staged+unstaged）与未跟踪文件一并列出；未跟踪文件返回全新增 patch；未出生 HEAD 返回空对比 |
 | 110 项设置 | `lib/settings.js` + `docs/settings-parity.md` | 上游 v1.30.0 的 110 个键全部接受、别名折叠、类型强制、非法值上报；74 项驱动真实行为 |
-| 列宽拖拽 | `ColumnResizeHeader` + `--dgg-col-*` 变量 | Date/Author/Commit 可拖拽，clamp、双击重置、localStorage 持久化 |
+| 列宽拖拽 | `ColumnHeader` 边界句柄 + `--dgg-col-*` 变量 | 拖边界时左侧列变宽、右侧相邻列等量让出（与上游一致，边界跟手）；clamp、双击重置相邻列、localStorage 持久化 |
 | 归档导出 | `POST /archive` + `archive()` | zip/tar.gz 写入 `<workspace>/.dsh-git-graph/archives/`，realpath 围栏、唯一文件名、返回相对路径 |
 | 作者头像 | `avatarUrl()` + `presentation.avatars` | Gravatar（md5、identicon）URL，默认关闭；客户端 `<img>` + 首字母兜底 |
 | PR 创建 | `POST /pr` + `readPullRequest()` | 解析 https/ssh remote → github/gitlab/bitbucket/other，base←origin/HEAD←main/master，内置 URL + 自定义 `$1..$8` 模板 |

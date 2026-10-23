@@ -327,8 +327,11 @@
 
 ### [x] TODO-27 列宽拖拽
 
-- 表头 Date/Author/Commit 拖拽句柄（pointer capture、`touch-action:none`）、clamp 区间、双击重置、
-  `localStorage` 持久化；`--dgg-col-*` CSS 变量驱动表头与行，列显隐仍可用。
+- 表头 Date/Author/Commit 左边界拖拽句柄（pointer capture、`touch-action:none`）、clamp 区间、双击重置
+  （恢复边界两侧的列宽）、`localStorage` 持久化；`--dgg-col-*` CSS 变量驱动表头与行，列显隐仍可用。
+- 2026-10-23 修复：句柄原先挂在列的右边界上，而固定列是右锚定的（描述列 `flex:1` 在左侧），
+  右边界不会移动，导致向右拖时列只向左长、分隔线不动、看起来"宽度反向变化"。现改为拖边界时
+  左侧列 `+delta`、右侧相邻可见列 `-delta`（描述边界由弹性描述吸收），边界 1:1 跟手。
 
 ### [x] TODO-28 `git archive` 导出
 
