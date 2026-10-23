@@ -1965,6 +1965,10 @@ test("BranchFilterBar renders checkbox options and the all reset", () => {
 
   const empty = collectElements(BranchFilterBar({ t: (key) => key, options: [], selection: null, onToggle() {}, onReset() {}, onClose() {} }));
   assert.ok(empty.some((element) => element.children.join("") === "filter.empty"));
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-header")), "header section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-body")), "body section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-footer")), "footer section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-option-checked")), "active options badged with checked class");
 });
 
 // ── TODO-11: sort order and the graph request ──���────────────────────────────
