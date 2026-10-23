@@ -408,6 +408,7 @@ function loadInternals(fetchImpl, reactImpl) {
         "COLUMN_WIDTH_STORAGE_KEY, clampColumnWidth, applyColumnResize, resetColumnWidth, columnWidthVars, " +
         "normalizeColumnWidths, readStoredColumnWidths, writeStoredColumnWidths, ColumnHeader, Avatar, " +
         "avatarInitials, avatarHue, archiveRequest, formatBytes, ArchiveDialog, archiveRefItem, rowMetaSegments, " +
+        "adaptiveDateText, adaptiveCommitHash, shortDateText, " +
         "graphWidthVar, prRequest, prValueOf, prUrlChoices, openExternalUrl, reviewScopesRequest, reviewEndRequest, " +
         "reviewEndAllRequest, reviewScopeLabel, normalizeReviewScopes, repoConfigRequest, repoConfigValueOf, " +
         "conflictLabel, PullRequestDialog, ReviewManagerPanel, RepoConfigPanel }",
@@ -1964,6 +1965,10 @@ test("BranchFilterBar renders checkbox options and the all reset", () => {
 
   const empty = collectElements(BranchFilterBar({ t: (key) => key, options: [], selection: null, onToggle() {}, onReset() {}, onClose() {} }));
   assert.ok(empty.some((element) => element.children.join("") === "filter.empty"));
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-header")), "header section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-body")), "body section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-footer")), "footer section structured");
+  assert.ok(all.some((element) => String(element.props.className || "").includes("dgg-filter-option-checked")), "active options badged with checked class");
 });
 
 // ── TODO-11: sort order and the graph request ──���────────────────────────────
@@ -5921,4 +5926,124 @@ test("ReviewManagerPanel explains an outdated host when scopes are unsupported",
   // A different BAD_REQUEST still shows the normal inline error.
   const other = collectElements(ReviewManagerPanel({ t: (key) => key, state: { status: "error", value: null, error: "bad thing", code: "BAD_REQUEST" }, onRefresh() {} }));
   assert.ok(other.some((element) => element.props.role === "alert"));
+});
+
+test("date, author and commit column styles adapt to different column widths", () => {
+  const {
+    adaptiveDateText,
+    adaptiveCommitHash,
+    shortDateText,
+    rowMetaSegments,
+    CommitRow,
+    ColumnHeader,
+  } = loadInternals();
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const pastSeconds = 1600000000; // year 2020
+
+  // 1. adaptiveCommitHash: extends hash precision as width increases
+  const fullHash = "fd46d47a8b3c2e1f0987654321fedcba01234567";
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 64), "fd46d47");
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 76), "fd46d47");
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 95), "fd46d47a");
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 120), "fd46d47a8b");
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 150), "fd46d47a8b3c");
+  assert.equal(adaptiveCommitHash(fullHash, "fd46d47", 190), "fd46d47a8b3c2e1f");
+  assert.equal(adaptiveCommitHash("", "short", 200), "short");
+
+  // 2. adaptiveDateText: compact formats for narrower date column
+  // Full width (>= 128px) gives the full date & time
+  const fullDateZh = adaptiveDateText(nowSeconds, 140, { dateFormat: "Date & Time" }, "zh");
+  assert.ok(fullDateZh.length > 8);
+
+  // Compact width (88-127px): current year omits redundant year to prevent clipping
+  const compactDateZh = adaptiveDateText(nowSeconds, 100, { dateFormat: "Date & Time" }, "zh");
+  assert.ok(compactDateZh.includes(":"), "contains time");
+  assert.ok(!compactDateZh.includes(String(new Date().getFullYear()) + "年"), "omits year for this year");
+
+  // Narrow width (< 88px): returns short MM-DD
+  const shortDate = adaptiveDateText(nowSeconds, 70, { dateFormat: "Date & Time" }, "zh");
+  assert.match(shortDate, /^\d{2}-\d{2}$/);
+
+  // Explicit formats like "Date Only" or "ISO Date Only" also support compact forms
+  assert.equal(adaptiveDateText(nowSeconds, 70, { dateFormat: "ISO Date Only" }, "en"), shortDateText(nowSeconds));
+  assert.equal(adaptiveDateText(nowSeconds, 120, { dateFormat: "ISO Date Only" }, "en").length, 10);
+
+  // 3. rowMetaSegments honours columnWidths
+  const commit = {
+    hash: fullHash,
+    abbrev: "fd46d47",
+    authorName: "雨霖铃",
+    authorTime: nowSeconds,
+    committerTime: nowSeconds,
+  };
+  const segmentsWide = rowMetaSegments(commit, { date: true, author: true, hash: true }, "zh", { dateFormat: "Date & Time" }, { date: 140, author: 100, commit: 150 });
+  const hashSegmentWide = segmentsWide.find((s) => s.key === "commit");
+  assert.equal(hashSegmentWide.text, "fd46d47a8b3c");
+
+  const segmentsNarrow = rowMetaSegments(commit, { date: true, author: true, hash: true }, "zh", { dateFormat: "Date & Time" }, { date: 60, author: 50, commit: 70 });
+  const dateSegmentNarrow = segmentsNarrow.find((s) => s.key === "date");
+  assert.match(dateSegmentNarrow.text, /^\d{2}-\d{2}$/);
+
+  // 4. CommitRow rendering with adaptive classes
+  // Author column with avatars enabled and narrow width (< 60px) renders avatar-only mode
+  const commitWithAvatar = { ...commit, authorEmail: "y@x.com", authorAvatar: "https://example.com/avatar.png" };
+  const rowElementsNarrow = collectElements(CommitRow({
+    t: (k) => k,
+    commit: commitWithAvatar,
+    row: { lane: 0, edges: [] },
+    laneCount: 1,
+    presentation: { avatars: true },
+    columnWidths: { date: 60, author: 50, commit: 70 },
+  }));
+
+  const authorCellNarrow = rowElementsNarrow.find((el) => String(el.props.className || "").includes("dgg-cell-author"));
+  assert.ok(authorCellNarrow, "author cell rendered");
+  assert.match(authorCellNarrow.props.className, /dgg-cell-author-avatar-only/);
+  assert.match(authorCellNarrow.props.className, /dgg-cell-author-compact/);
+
+  const dateCellNarrow = rowElementsNarrow.find((el) => String(el.props.className || "").includes("dgg-cell-date"));
+  assert.match(dateCellNarrow.props.className, /dgg-cell-date-minimal/);
+
+  const commitCellNarrow = rowElementsNarrow.find((el) => String(el.props.className || "").includes("dgg-cell-commit"));
+  assert.match(commitCellNarrow.props.className, /dgg-cell-commit-compact/);
+  assert.ok(rowElementsNarrow.some((el) => String(el.props.className || "").includes("dgg-commit-pill")));
+
+  // When width is wide, author cell includes both avatar and text
+  const rowElementsWide = collectElements(CommitRow({
+    t: (k) => k,
+    commit: commitWithAvatar,
+    row: { lane: 0, edges: [] },
+    laneCount: 1,
+    presentation: { avatars: true },
+    columnWidths: { date: 140, author: 140, commit: 120 },
+  }));
+  const authorCellWide = rowElementsWide.find((el) => String(el.props.className || "").includes("dgg-cell-author"));
+  assert.match(authorCellWide.props.className, /dgg-cell-author-wide/);
+  assert.doesNotMatch(authorCellWide.props.className, /dgg-cell-author-avatar-only/);
+
+  // 5. ColumnHeader reflects compact widths
+  const header = collectElements(ColumnHeader({
+    t: (k) => k,
+    columns: { date: true, author: true, hash: true },
+    columnWidths: { date: 60, author: 50, commit: 70 },
+  }));
+  const compactHeaderCells = header.filter((el) => String(el.props.className || "").includes("dgg-colhead-compact"));
+  assert.equal(compactHeaderCells.length, 3, "all 3 data columns in header get compact styling when narrowed");
+});
+
+test("buildListModel caches layout across summary updates for the same commits array", () => {
+  const { buildListModel, layoutRefChips } = loadInternals();
+  const commits = [
+    { hash: "c1", parents: [], subject: "init" },
+    { hash: "c2", parents: ["c1"], subject: "feature" },
+  ];
+  const model1 = buildListModel(commits, { visible: false, total: 0 });
+  const model2 = buildListModel(commits, { visible: true, total: 1, staged: 1, unstaged: 0, untracked: 0 });
+  assert.strictEqual(model1.layout, model2.layout, "re-uses cached layout object when commits reference is unchanged");
+
+  const emptyChips = layoutRefChips([], new Map(), 5, null);
+  assert.equal(emptyChips.chips.length, 0);
+  assert.equal(emptyChips.tagsOnRight, false);
+  assert.equal(emptyChips.alignedToGraph, false);
 });

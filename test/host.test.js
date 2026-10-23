@@ -4688,3 +4688,26 @@ test("repository config rejects invalid JSON and oversized files without crashin
     host.dispose();
   }
 });
+
+test("readGraph with options.repoPath avoids redundant detectRepo call", async () => {
+  const calls = [];
+  const fakeRun = async (argv) => {
+    calls.push(argv);
+    const sub = argv[0];
+    switch (sub) {
+      case "rev-parse":
+        return ok("main");
+      case "for-each-ref":
+        return ok("");
+      case "status":
+        return ok("");
+      case "log":
+        return ok("");
+      default:
+        return ok("");
+    }
+  };
+  const fakeApi = createGitApi(fakeRun);
+  await fakeApi.readGraph("/fake/repo", { maxCommits: 2, repoPath: "/fake/repo" });
+  assert.equal(calls.some((argv) => argv[0] === "rev-parse" && argv[1] === "--show-toplevel"), false, "skips detectRepo when repoPath is provided");
+});
