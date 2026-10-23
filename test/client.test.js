@@ -5196,6 +5196,15 @@ test("column width helpers clamp, resize, reset and serialize", () => {
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 1000)), { date: 140, author: 260, commit: 76 }, "clamped high");
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "bogus", 50)), plain(COLUMN_WIDTH_DEFAULTS));
   assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", Number.NaN)), plain(COLUMN_WIDTH_DEFAULTS));
+  // A boundary drag trades width with the visible column on the right, so the dragged
+  // boundary follows the pointer instead of growing on its far edge.
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 8, "author")), { date: 148, author: 52, commit: 76 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 100, "author")), { date: 152, author: 48, commit: 76 }, "the author stops at its minimum");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", -100, "author")), { date: 48, author: 152, commit: 76 }, "the date stops at its minimum");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", 12, "commit")), { date: 140, author: 72, commit: 64 });
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "author", -100, "commit")), { date: 140, author: 48, commit: 88 }, "the author stops at its minimum");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50, "bogus")), { date: 190, author: 60, commit: 76 }, "an unknown partner falls back to the description absorbing the change");
+  assert.deepEqual(plain(applyColumnResize(COLUMN_WIDTH_DEFAULTS, "date", 50, "date")), { date: 190, author: 60, commit: 76 }, "a column never trades with itself");
   assert.deepEqual(plain(resetColumnWidth({ date: 123, author: 200, commit: 100 }, "author")), { date: 123, author: 60, commit: 100 });
   assert.deepEqual(plain(normalizeColumnWidths({ date: 10, author: 999999, foo: 1 })), { date: 48, author: 260, commit: 76 });
   const { graphWidthVar } = loadInternals();
@@ -5292,27 +5301,37 @@ test("column header renders draggable handles and the list applies CSS variables
     t: (key) => key,
     columns: { date: true, author: true, hash: true },
     onResizeStart: (column) => events.push(["start", column]),
-    onResizeMove: (column, delta) => events.push(["move", column, delta]),
+    onResizeMove: (column, delta, nextColumn) => events.push(["move", column, delta, nextColumn === undefined ? null : nextColumn]),
     onResizeEnd: (column) => events.push(["end", column]),
-    onReset: (column) => events.push(["reset", column]),
+    onReset: (column, nextColumn) => events.push(["reset", column, nextColumn === undefined ? null : nextColumn]),
   }));
   const handles = header.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle"));
-  assert.equal(handles.length, 3, "handles only on Date/Author/Commit");
+  assert.equal(handles.length, 3, "one handle per visible data-column boundary");
   const headerCells = header.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell"));
   assert.deepEqual(headerCells.map((element) => cellToken(element.props.className)), ["graph", "desc", "date", "author", "commit"]);
   const labelTexts = headerCells.map((element) => collectElements(element).filter((child) => String(child.props.className || "").includes("dgg-colhead-label")).map((child) => child.children.join("")).join(""));
   assert.deepEqual(labelTexts, ["column.graph", "column.description", "column.date", "column.author", "column.commit"]);
-  const cellsWithHandles = headerCells.filter((element) => collectElements(element).some((child) => String(child.props.className || "").includes("dgg-colhead-handle"))).length;
-  assert.equal(cellsWithHandles, 3, "the graph/description cells have no resize handle");
+  // The handles sit on the boundaries at the LEFT edge of Date/Author/Commit, and each
+  // boundary is owned by the column on its left ("日期" at the description boundary and
+  // at the date/author boundary, "作者" at the author/commit boundary). The right-most
+  // column edge never moves, so it has no handle.
+  const cellsWithHandles = headerCells.filter((element) => collectElements(element).some((child) => String(child.props.className || "").includes("dgg-colhead-handle"))).map((element) => cellToken(element.props.className));
+  assert.deepEqual(cellsWithHandles, ["date", "author", "commit"], "the graph/description cells have no resize handle");
   assert.equal(handles[0].props.role, "separator");
   assert.equal(handles[0].props["aria-orientation"], "vertical");
   assert.equal(handles[0].props["aria-label"], "column.resize: column.date");
+  assert.equal(handles[1].props["aria-label"], "column.resize: column.date", "the date/author boundary resizes the date");
+  assert.equal(handles[2].props["aria-label"], "column.resize: column.author", "the author/commit boundary resizes the author");
   assert.equal(typeof handles[0].props.onPointerDown, "function");
   assert.equal(typeof handles[0].props.onPointerMove, "function");
   assert.equal(typeof handles[0].props.onPointerUp, "function");
   handles[1].props.onDoubleClick();
-  assert.deepEqual(events.at(-1), ["reset", "author"]);
-  // Pointer capture is requested on pointer-down and released on pointer-up.
+  assert.deepEqual(events.at(-1), ["reset", "date", "author"], "a boundary reset restores both of its columns");
+  handles[2].props.onDoubleClick();
+  assert.deepEqual(events.at(-1), ["reset", "author", "commit"], "the author/commit boundary also resets the commit column");
+  // Pointer capture is requested on pointer-down and released on pointer-up. The first
+  // boundary (description | date) has no trading partner: dragging right shrinks the
+  // date so the description grows.
   const capture = [];
   handles[0].props.onPointerDown({
     preventDefault() {},
@@ -5323,14 +5342,29 @@ test("column header renders draggable handles and the list applies CSS variables
   assert.deepEqual(capture, [["set", 7]]);
   assert.deepEqual(events.at(-1), ["start", "date"]);
   handles[0].props.onPointerMove({ clientX: 130 });
-  assert.deepEqual(events.at(-1), ["move", "date", 30]);
+  assert.deepEqual(events.at(-1), ["move", "date", -30, null]);
   handles[0].props.onPointerUp({ currentTarget: { releasePointerCapture: (id) => capture.push(["release", id]) } });
   assert.deepEqual(capture.at(-1), ["release", 7]);
   assert.deepEqual(events.at(-1), ["end", "date"]);
+  // The date/author boundary trades width: dragging right grows the date by the drag
+  // distance and shrinks the author by the same distance (upstream Git Graph behaviour).
+  handles[1].props.onPointerDown({ preventDefault() {}, currentTarget: {}, pointerId: 8, clientX: 200 });
+  handles[1].props.onPointerMove({ clientX: 230 });
+  assert.deepEqual(events.at(-1), ["move", "date", 30, "author"]);
+  handles[1].props.onPointerUp({ currentTarget: {} });
+  handles[2].props.onPointerDown({ preventDefault() {}, currentTarget: {}, pointerId: 9, clientX: 200 });
+  handles[2].props.onPointerMove({ clientX: 180 });
+  assert.deepEqual(events.at(-1), ["move", "author", -20, "commit"]);
+  handles[2].props.onPointerUp({ currentTarget: {} });
   // Hidden columns remove both the header cell and its handle; Graph/Description stay.
   const hidden = collectElements(ColumnHeader({ t: (key) => key, columns: { date: true, author: false, hash: false } }));
   assert.equal(hidden.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 1);
   assert.deepEqual(hidden.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => cellToken(element.props.className)), ["graph", "desc", "date"]);
+  // With the author hidden the commit boundary trades directly with the date.
+  const skipAuthor = collectElements(ColumnHeader({ t: (key) => key, columns: { date: true, author: false, hash: true } }));
+  const skipAuthorHandles = skipAuthor.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle"));
+  assert.equal(skipAuthorHandles.length, 2);
+  assert.deepEqual(skipAuthorHandles.map((element) => element.props["aria-label"]), ["column.resize: column.date", "column.resize: column.date"]);
   const noColumns = collectElements(ColumnHeader({ t: (key) => key, columns: { date: false, author: false, hash: false } }));
   assert.equal(noColumns.filter((element) => String(element.props.className || "").includes("dgg-colhead-handle")).length, 0);
   assert.deepEqual(noColumns.filter((element) => String(element.props.className || "").split(" ").includes("dgg-cell")).map((element) => cellToken(element.props.className)), ["graph", "desc"]);
@@ -5369,6 +5403,11 @@ test("column header renders draggable handles and the list applies CSS variables
   assert.deepEqual(headerCellsInBody.map((element) => cellToken(element.props.className)), rowCells.map((element) => cellToken(element.props.className)), "header and row cells agree on every column class");
   assert.equal(typeof headerInBody.props.onResizeMove, "function");
   assert.match(SOURCE, /touch-action:none/);
+  // The handle must straddle the boundary it moves: a right-anchored handle stayed put
+  // while the column grew on its far edge, so the drag direction looked inverted.
+  assert.match(SOURCE, /\.dgg-colhead-handle\{[^}]*left:-5px;width:10px/);
+  assert.equal(/\.dgg-colhead-handle\{[^}]*right:-4px/.test(SOURCE), false, "the old pinned-boundary handle is gone");
+  assert.match(SOURCE, /\.dgg-colhead-handle::before\{[^}]*left:50%/, "the hover line is centred on the column boundary");
   assert.match(SOURCE, /columnWidthVars\(columnWidths\)/);
   assert.match(SOURCE, /\.dgg-colhead\{[^}]*position:sticky/, "the header sticks to the top of the scrolling list");
   assert.match(SOURCE, /readStoredColumnWidths\(safeClientStorage\(\)\)/);
